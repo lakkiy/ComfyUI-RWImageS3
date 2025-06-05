@@ -289,7 +289,7 @@ class SaveImageToS3:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "filename_prefix": ("STRING", {"default": "output_image"}),
+                "filename_prefix": ("STRING", {"default": "comfyui_s3_img_connect"}),
             }
         }
 
