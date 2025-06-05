@@ -1,3 +1,9 @@
+> [!TIP]
+> ### 🚀 Quick Clone & Setup
+> ```bash
+> git clone https://github.com/Jayanth-y/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
+> ```
+
 # ComfyUI S3 Image Nodes
 
 A powerful ComfyUI extension that enables seamless integration with AWS S3 storage for reading and saving images directly within your ComfyUI workflows. This extension eliminates the need for manual file transfers by providing direct S3 connectivity for your image processing pipelines.
@@ -33,7 +39,7 @@ Navigate to your ComfyUI custom nodes directory and clone this repository:
 cd /ComfyUI/custom_nodes
 
 # Clone the repository
-git clone https://github.com/Jayanth-y/ComfyUI-Nodes-for-AWS-S3-Image-Connect.git
+git clone https://github.com/Jayanth-y/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
 
 # Navigate into the project directory
 cd comfyui-s3-connect
