@@ -47,7 +47,7 @@ cd /ComfyUI/custom_nodes
 git clone https://github.com/Jayanth-y/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
 
 # Navigate into the project directory
-cd comfyui-s3-connect
+cd comfyui-s3-img-connect
 ```
 
 ### 2. Install Dependencies
