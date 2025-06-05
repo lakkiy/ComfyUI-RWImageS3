@@ -8,6 +8,11 @@
 
 A powerful ComfyUI extension that enables seamless integration with AWS S3 storage for reading and saving images directly within your ComfyUI workflows. This extension eliminates the need for manual file transfers by providing direct S3 connectivity for your image processing pipelines.
 
+## 📸 See It In Action
+
+![ComfyUI S3 Image Connect Custom Nodes Demo](workflow-example.png)
+*ComfyUI workflow showing S3 nodes in action*
+
 ## 🚀 What This Project Does
 
 This ComfyUI extension provides two custom nodes that enable direct interaction with AWS S3 storage:
