@@ -1,7 +1,7 @@
 > [!TIP]
 > ### 🚀 Quick Clone & Setup
 > ```bash
-> git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git comfyui-s3-img-connect
+> git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git
 > ```
 
 # ComfyUI S3 Image Nodes
@@ -44,10 +44,10 @@ Navigate to your ComfyUI custom nodes directory and clone this repository:
 cd /ComfyUI/custom_nodes
 
 # Clone the repository
-git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git comfyui-s3-img-connect
+git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git
 
 # Navigate into the project directory
-cd comfyui-s3-img-connect
+cd ComfyUI-RWImageS3
 ```
 
 ### 2. Install Dependencies

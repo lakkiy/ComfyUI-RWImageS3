@@ -76,7 +76,7 @@ The AWS credentials need these S3 permissions:
 1. Clone repository to ComfyUI's custom_nodes directory:
 ```bash
 cd /ComfyUI/custom_nodes
-git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git comfyui-s3-img-connect
+git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git
 ```
 
 2. Install dependencies and restart ComfyUI
