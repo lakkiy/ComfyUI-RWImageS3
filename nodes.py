@@ -13,8 +13,8 @@ Requirements:
 - python-dotenv
 - numpy
 
-Author: Jayanth Yedureswaram
-GitHub: https://github.com/Jayanth-y
+Author: Jayanth Yedureswaram (original), lakkiy (fork)
+GitHub: https://github.com/lakkiy/ComfyUI-RWImageS3
 Version: 1.0
 """
 

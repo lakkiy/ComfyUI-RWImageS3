@@ -1,7 +1,7 @@
 > [!TIP]
 > ### 🚀 Quick Clone & Setup
 > ```bash
-> git clone https://github.com/lakkiy/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
+> git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git comfyui-s3-img-connect
 > ```
 
 # ComfyUI S3 Image Nodes
@@ -44,7 +44,7 @@ Navigate to your ComfyUI custom nodes directory and clone this repository:
 cd /ComfyUI/custom_nodes
 
 # Clone the repository
-git clone https://github.com/lakkiy/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
+git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git comfyui-s3-img-connect
 
 # Navigate into the project directory
 cd comfyui-s3-img-connect
