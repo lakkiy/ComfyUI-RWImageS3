@@ -23,6 +23,7 @@ import boto3
 import torch
 import tempfile
 import numpy as np
+import time
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 from datetime import datetime
@@ -186,7 +187,11 @@ class ReadImageFromS3:
         with tempfile.NamedTemporaryFile(delete=True, suffix=file_extension) as temp_file:
             try:
                 # Download image from S3 to temporary file
+                start_time = time.time()
                 s3_client.download_file(S3_BUCKET_NAME, s3_key, temp_file.name)
+                end_time = time.time()
+                download_duration = end_time - start_time
+                print(f"S3 download completed: s3_key='{s3_key}', duration={download_duration:.3f}s")
             except Exception as e:
                 raise RuntimeError(f"ReadImageFromS3: Failed to download '{s3_key}': {e}")
 
