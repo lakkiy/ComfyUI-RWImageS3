@@ -1,7 +1,7 @@
 > [!TIP]
 > ### 🚀 Quick Clone & Setup
 > ```bash
-> git clone https://github.com/Jayanth-y/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
+> git clone https://github.com/lakkiy/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
 > ```
 
 # ComfyUI S3 Image Nodes
@@ -17,9 +17,9 @@ A powerful ComfyUI extension that enables seamless integration with AWS S3 stora
 
 This ComfyUI extension provides two custom nodes that enable direct interaction with AWS S3 storage:
 
-- **Read images directly from S3** into your ComfyUI workflows
+- **Read images directly from S3** using flexible, user-defined paths
 - **Save processed images directly to S3** with automatic timestamping
-- **Dynamic dropdown population** showing available images in your S3 bucket
+- **Custom S3 path input** - specify any S3 object key directly in the interface
 - **Automatic image processing** including EXIF orientation correction and format standardization
 
 ### 📸 Supported Image Formats
@@ -44,7 +44,7 @@ Navigate to your ComfyUI custom nodes directory and clone this repository:
 cd /ComfyUI/custom_nodes
 
 # Clone the repository
-git clone https://github.com/Jayanth-y/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
+git clone https://github.com/lakkiy/ComfyUI-Custom-Nodes-for-AWS-S3-Image-Connect.git comfyui-s3-img-connect
 
 # Navigate into the project directory
 cd comfyui-s3-img-connect
@@ -59,8 +59,11 @@ Install the required Python packages using pip. If you're using a virtual enviro
 # source venv/bin/activate  # On Linux/Mac
 # venv\Scripts\activate     # On Windows
 
-# Install all required dependencies
-pip install boto3 torch pillow python-dotenv numpy
+# Install dependencies from requirements.txt (recommended)
+pip install -r requirements.txt
+
+# Or install manually with specific versions
+pip install boto3==1.39.13 numpy==1.26.4 pillow==11.3.0 python-dotenv==1.1.1 torch==2.7.1
 ```
 
 ### 3. Configure AWS Credentials
@@ -77,12 +80,19 @@ S3_BUCKET_NAME=your-bucket-name
 
 ### 4. Set Up S3 Bucket Structure
 
-Create the following folder structure in your S3 bucket:
+> **✨ New in v2.0**: Flexible folder structure! You can now organize your images in any folder structure you prefer.
+
+Recommended S3 bucket organization:
 ```
 your-bucket-name/
-├── input/     # Upload your source images here
-└── output/    # Processed images will be saved here
+├── images/           # Your source images (any structure)
+│   ├── photos/
+│   ├── datasets/
+│   └── temp/
+└── output/          # Processed images will be saved here
 ```
+
+**Note**: With the updated ReadImageFromS3 node, you can specify any S3 object key directly in the ComfyUI interface.
 
 ### 5. Restart ComfyUI
 
@@ -95,25 +105,34 @@ Restart ComfyUI to load the new custom nodes. The nodes will appear in the `imag
 **Category**: `image`  
 **Node Name**: `Read Image From S3`
 
-This node loads images directly from your S3 bucket's input folder into ComfyUI workflows.
+> **🆕 Updated in v2.0**: Now supports custom S3 paths!
+
+This node loads images directly from any location in your S3 bucket into ComfyUI workflows.
 
 #### Features:
-- **Dynamic file listing**: Automatically populates dropdown with available images from S3
+- **✨ Custom S3 path input**: Specify any S3 object key directly in the interface
+- **S3 object validation**: Automatically checks if the specified file exists
 - **EXIF orientation correction**: Automatically rotates images based on EXIF data
 - **Format standardization**: Converts all images to RGB format for consistent processing
 - **Tensor normalization**: Outputs properly normalized tensors in [0, 1] range
 
 #### Inputs:
-- **image** (dropdown): Select from available images in your S3 input folder
+- **s3_key** (text): Full S3 object key path (e.g., "photos/vacation/beach.jpg")
 
 #### Outputs:
 - **IMAGE**: PyTorch tensor of shape `[1, H, W, 3]` with RGB values normalized to [0, 1]
 
 #### Usage:
-1. Upload images to your S3 bucket's `input/` folder
+1. Upload images anywhere in your S3 bucket
 2. Add the "Read Image From S3" node to your workflow
-3. Select the desired image from the dropdown
+3. Enter the full S3 object key in the text field (e.g., "my-folder/image.png")
 4. Connect the output to other image processing nodes
+
+#### Example S3 Paths:
+- `photos/2024/vacation.jpg`
+- `datasets/training/sample001.png`
+- `input/test.webp`
+- `temp/processed_image.bmp`
 
 ---
 
@@ -191,21 +210,28 @@ Example IAM policy:
 
 Here's a typical workflow using these S3 nodes:
 
-1. **Upload source images** to your S3 `input/` folder
-2. **Add "Read Image From S3"** node and select your image
+1. **Upload source images** to any folder in your S3 bucket
+2. **Add "Read Image From S3"** node and enter the S3 path (e.g., "photos/my-image.jpg")
 3. **Apply image processing** nodes (upscaling, filtering, etc.)
 4. **Add "Save Image To S3"** node to save the result
 5. **Optional**: Connect to PreviewImage to see the result in ComfyUI
 6. **Check your S3 `output/` folder** for the processed images
 
+### 🆕 What's New in v2.0:
+- **Flexible S3 paths**: No longer restricted to `input/` folder
+- **Direct path input**: Type any S3 object key directly in the interface
+- **Better validation**: Real-time S3 object existence checking
+- **Requirements.txt**: Pinned dependency versions for stable installation
+
 ## 🐛 Troubleshooting
 
 ### Common Issues:
 
-**"Image not found in S3 input folder"**
-- Verify your image is uploaded to the correct S3 bucket and input folder
+**"S3 object not found or inaccessible"**
+- Verify the S3 object key path is correct (e.g., "folder/image.png")
 - Check that the image has a supported file extension
-- Ensure your AWS credentials have `s3:ListBucket` permission
+- Ensure your AWS credentials have `s3:GetObject` permission
+- Verify the file exists in your S3 bucket
 
 **"Failed to download from S3"**
 - Verify your AWS credentials are correct
@@ -217,10 +243,10 @@ Here's a typical workflow using these S3 nodes:
 - Check that your S3 bucket exists and is accessible
 - Ensure the output folder exists in your bucket
 
-**Empty dropdown in Read Image node**
-- Upload supported image files to your S3 input folder
+**"S3 key cannot be empty" or validation errors**
+- Make sure to enter a valid S3 object key in the text field
 - Verify your `.env` configuration is correct
-- Check ComfyUI console for error messages
+- Check ComfyUI console for detailed error messages
 
 ## 📋 Requirements
 
