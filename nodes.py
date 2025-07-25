@@ -121,19 +121,21 @@ class ReadImageFromS3:
     ComfyUI Node: Read Image From S3
     
     This node provides functionality to load images directly from AWS S3 storage
-    into ComfyUI workflows. It downloads images from the S3 "input/" folder,
-    processes them through PIL for proper orientation and format conversion,
+    into ComfyUI workflows using custom S3 object keys. Users can specify the full
+    S3 path to their image files, allowing for flexible folder structures.
+    The node processes images through PIL for proper orientation and format conversion,
     and returns them as normalized PyTorch tensors ready for ComfyUI processing.
     
     Features:
+    - Custom S3 path input (user can specify any S3 object key)
     - Automatic EXIF orientation correction
     - RGBA to RGB conversion with proper alpha handling
     - Tensor normalization to [0, 1] range
-    - Dynamic dropdown population from S3 contents
+    - S3 object existence validation
     - Error handling for network and file operations
     
     Input:
-    - image: Dropdown selection of available images in S3 input folder
+    - s3_key: Text input for full S3 object key (e.g., "my-folder/image.png")
     
     Output:
     - IMAGE: PyTorch tensor of shape [1, H, W, 3] with RGB values in [0, 1] range
@@ -146,13 +148,11 @@ class ReadImageFromS3:
         
         Returns:
             Dict containing the required input specifications for ComfyUI.
-            The image parameter is populated dynamically from S3 contents.
+            The s3_key parameter allows users to specify the full S3 object path.
         """
-        available_files = list_images_from_s3("input/")
-        
         return {
             "required": {
-                "image": (available_files, {"image_upload": False}),
+                "s3_key": ("STRING", {"default": "input/example.png", "multiline": False}),
             }
         }
 
@@ -162,16 +162,16 @@ class ReadImageFromS3:
     RETURN_NAMES = ("image",)
     FUNCTION = "load_image"
 
-    def load_image(self, image: str) -> Tuple[torch.Tensor]:
+    def load_image(self, s3_key: str) -> Tuple[torch.Tensor]:
         """
         Load and process an image from S3 storage.
         
-        This method downloads the specified image from S3, applies EXIF orientation
-        correction, converts to RGBA format, extracts RGB channels, and normalizes
-        the pixel values to create a PyTorch tensor suitable for ComfyUI processing.
+        This method downloads the specified image from S3 using the full S3 object key,
+        applies EXIF orientation correction, converts to RGBA format, extracts RGB channels,
+        and normalizes the pixel values to create a PyTorch tensor suitable for ComfyUI processing.
         
         Args:
-            image (str): Filename of the image to load from S3 input folder
+            s3_key (str): Full S3 object key path (e.g., "my-folder/image.png")
             
         Returns:
             Tuple[torch.Tensor]: Single-element tuple containing the processed image
@@ -180,10 +180,9 @@ class ReadImageFromS3:
         Raises:
             RuntimeError: If S3 download fails or image processing encounters errors
         """
-        s3_key = f"input/{image}"
         
         # Create temporary file with appropriate extension for PIL compatibility
-        file_extension = os.path.splitext(image)[1]
+        file_extension = os.path.splitext(s3_key)[1]
         with tempfile.NamedTemporaryFile(delete=True, suffix=file_extension) as temp_file:
             try:
                 # Download image from S3 to temporary file
@@ -213,43 +212,55 @@ class ReadImageFromS3:
                 return (image_tensor,)
                 
             except Exception as e:
-                raise RuntimeError(f"ReadImageFromS3: Failed to process image '{image}': {e}")
+                raise RuntimeError(f"ReadImageFromS3: Failed to process image '{s3_key}': {e}")
 
     @classmethod
-    def IS_CHANGED(cls, image: str) -> str:
+    def IS_CHANGED(cls, s3_key: str) -> str:
         """
         ComfyUI cache invalidation method.
         
         This method helps ComfyUI determine when to re-execute the node.
-        Returning the image filename ensures the node re-executes when
-        a different image is selected.
+        Returning the S3 key ensures the node re-executes when
+        a different S3 object is specified.
         
         Args:
-            image (str): The selected image filename
+            s3_key (str): The S3 object key
             
         Returns:
-            str: The image filename for cache comparison
+            str: The S3 key for cache comparison
         """
-        return image
+        return s3_key
 
     @classmethod
-    def VALIDATE_INPUTS(cls, image: str) -> Union[bool, str]:
+    def VALIDATE_INPUTS(cls, s3_key: str) -> Union[bool, str]:
         """
-        Validate that the selected image exists in S3.
+        Validate that the specified S3 object exists.
         
         This method is called by ComfyUI to validate inputs before execution.
-        It checks that the selected image is available in the S3 input folder.
+        It checks that the specified S3 object exists in the bucket.
         
         Args:
-            image (str): The selected image filename to validate
+            s3_key (str): The S3 object key to validate
             
         Returns:
             bool: True if validation passes
             str: Error message if validation fails
         """
-        available_files = list_images_from_s3("input/")
-        if image not in available_files:
-            return f"Image '{image}' not found in S3 input folder."
+        if not s3_key or not s3_key.strip():
+            return "S3 key cannot be empty."
+        
+        # Check if the file has a supported image extension
+        s3_key_lower = s3_key.lower()
+        has_valid_extension = any(s3_key_lower.endswith(ext) for ext in ALLOWED_EXTENSIONS)
+        if not has_valid_extension:
+            return f"File '{s3_key}' does not have a supported image extension. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+        
+        # Check if the object exists in S3
+        try:
+            s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+        except Exception as e:
+            return f"S3 object '{s3_key}' not found or inaccessible: {str(e)}"
+        
         return True
 
 
