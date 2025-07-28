@@ -1,9 +1,3 @@
-> [!TIP]
-> ### 🚀 Quick Clone & Setup
-> ```bash
-> git clone https://github.com/lakkiy/ComfyUI-RWImageS3.git
-> ```
-
 # ComfyUI S3 Image Nodes
 
 A powerful ComfyUI extension that enables seamless integration with AWS S3 storage for reading and saving images directly within your ComfyUI workflows. This extension eliminates the need for manual file transfers by providing direct S3 connectivity for your image processing pipelines.
@@ -26,7 +20,7 @@ This ComfyUI extension provides two custom nodes that enable direct interaction 
 
 The extension supports the following single-frame image formats:
 - `.png` - Portable Network Graphics
-- `.jpg` / `.jpeg` - JPEG images  
+- `.jpg` / `.jpeg` - JPEG images
 - `.bmp` - Bitmap images
 - `.webp` - WebP images
 - `.tiff` - Tagged Image File Format
@@ -63,7 +57,7 @@ Install the required Python packages using pip. If you're using a virtual enviro
 pip install -r requirements.txt
 
 # Or install manually with specific versions
-pip install boto3==1.39.13 numpy==1.26.4 pillow==11.3.0 python-dotenv==1.1.1 torch==2.7.1
+pip install boto3 numpy pillow python-dotenv torch
 ```
 
 ### 3. Configure AWS Credentials
@@ -102,7 +96,7 @@ Restart ComfyUI to load the new custom nodes. The nodes will appear in the `imag
 
 ### 1. Read Image From S3
 
-**Category**: `image`  
+**Category**: `image`
 **Node Name**: `Read Image From S3`
 
 > **🆕 Updated in v2.0**: Now supports custom S3 paths!
@@ -138,7 +132,7 @@ This node loads images directly from any location in your S3 bucket into ComfyUI
 
 ### 2. Save Image To S3
 
-**Category**: `image`  
+**Category**: `image`
 **Node Name**: `Save Image To S3`
 
 This node saves processed images from ComfyUI workflows directly to your S3 bucket's output folder.
