@@ -44,6 +44,13 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")  # Default to us-east-1
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 ENDPOINT_URL = os.getenv("ENDPOINT_URL")  # Custom S3-compatible endpoint (optional, e.g., Cloudflare R2)
 
+# Fallback S3 Configuration (optional) - Retrieved from environment variables
+FALLBACK_AWS_ACCESS_KEY = os.getenv("FALLBACK_AWS_ACCESS_KEY_ID")
+FALLBACK_AWS_SECRET_KEY = os.getenv("FALLBACK_AWS_SECRET_ACCESS_KEY")
+FALLBACK_AWS_REGION = os.getenv("FALLBACK_AWS_REGION", "us-east-1")
+FALLBACK_S3_BUCKET_NAME = os.getenv("FALLBACK_S3_BUCKET_NAME")
+FALLBACK_ENDPOINT_URL = os.getenv("FALLBACK_ENDPOINT_URL")
+
 # Supported image file extensions (single-frame formats only)
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff")
 
@@ -58,6 +65,22 @@ if ENDPOINT_URL:
     s3_client_config["endpoint_url"] = ENDPOINT_URL
 
 s3_client = boto3.client("s3", **s3_client_config)
+
+# Initialize fallback S3 client if fallback credentials are provided
+fallback_s3_client = None
+fallback_s3_bucket = None
+if FALLBACK_AWS_ACCESS_KEY and FALLBACK_AWS_SECRET_KEY and FALLBACK_S3_BUCKET_NAME:
+    fallback_s3_client_config = {
+        "aws_access_key_id": FALLBACK_AWS_ACCESS_KEY,
+        "aws_secret_access_key": FALLBACK_AWS_SECRET_KEY,
+        "region_name": FALLBACK_AWS_REGION,
+    }
+    if FALLBACK_ENDPOINT_URL:
+        fallback_s3_client_config["endpoint_url"] = FALLBACK_ENDPOINT_URL
+
+    fallback_s3_client = boto3.client("s3", **fallback_s3_client_config)
+    fallback_s3_bucket = FALLBACK_S3_BUCKET_NAME
+    print(f"Fallback S3 client initialized: bucket={FALLBACK_S3_BUCKET_NAME}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -175,11 +198,14 @@ class ReadImageFromS3:
 
     def load_image(self, s3_key: str) -> Tuple[torch.Tensor]:
         """
-        Load and process an image from S3 storage.
+        Load and process an image from S3 storage with fallback support.
 
         This method downloads the specified image from S3 using the full S3 object key,
         applies EXIF orientation correction, converts to RGBA format, extracts RGB channels,
         and normalizes the pixel values to create a PyTorch tensor suitable for ComfyUI processing.
+
+        If the primary S3 storage fails to retrieve the image (e.g., 404 not found),
+        the method automatically attempts to download from the fallback S3 storage if configured.
 
         Args:
             s3_key (str): Full S3 object key path (e.g., "my-folder/image.png")
@@ -189,7 +215,8 @@ class ReadImageFromS3:
                                 tensor with shape [1, H, W, 3] and values in [0, 1]
 
         Raises:
-            RuntimeError: If S3 download fails or image processing encounters errors
+            RuntimeError: If S3 download fails from both primary and fallback storage,
+                         or if image processing encounters errors
         """
 
         # Create temporary file with appropriate extension for PIL compatibility
@@ -197,18 +224,51 @@ class ReadImageFromS3:
         with tempfile.NamedTemporaryFile(
             delete=True, suffix=file_extension
         ) as temp_file:
+            # Try primary S3 storage first
+            download_successful = False
+            primary_error = None
+
             try:
-                # Download image from S3 to temporary file
+                # Download image from primary S3 to temporary file
                 start_time = time.time()
                 s3_client.download_file(S3_BUCKET_NAME, s3_key, temp_file.name)
                 end_time = time.time()
                 download_duration = end_time - start_time
                 print(
-                    f"S3 download completed: s3_key='{s3_key}', duration={download_duration:.3f}s"
+                    f"S3 download completed (primary): s3_key='{s3_key}', duration={download_duration:.3f}s"
                 )
+                download_successful = True
             except Exception as e:
+                primary_error = e
+                print(f"Primary S3 download failed for '{s3_key}': {e}")
+
+                # Try fallback S3 storage if configured
+                if fallback_s3_client is not None:
+                    try:
+                        print(f"Attempting fallback S3 download for '{s3_key}'...")
+                        start_time = time.time()
+                        fallback_s3_client.download_file(fallback_s3_bucket, s3_key, temp_file.name)
+                        end_time = time.time()
+                        download_duration = end_time - start_time
+                        print(
+                            f"S3 download completed (fallback): s3_key='{s3_key}', duration={download_duration:.3f}s"
+                        )
+                        download_successful = True
+                    except Exception as fallback_e:
+                        print(f"Fallback S3 download also failed for '{s3_key}': {fallback_e}")
+                        raise RuntimeError(
+                            f"ReadImageFromS3: Failed to download '{s3_key}' from both primary and fallback storage. "
+                            f"Primary error: {primary_error}. Fallback error: {fallback_e}"
+                        )
+                else:
+                    # No fallback configured, raise the primary error
+                    raise RuntimeError(
+                        f"ReadImageFromS3: Failed to download '{s3_key}': {primary_error}"
+                    )
+
+            if not download_successful:
                 raise RuntimeError(
-                    f"ReadImageFromS3: Failed to download '{s3_key}': {e}"
+                    f"ReadImageFromS3: Failed to download '{s3_key}': {primary_error}"
                 )
 
             # Load and process the image using PIL
@@ -261,10 +321,11 @@ class ReadImageFromS3:
     @classmethod
     def VALIDATE_INPUTS(cls, s3_key: str) -> Union[bool, str]:
         """
-        Validate that the specified S3 object exists.
+        Validate that the specified S3 object exists in primary or fallback storage.
 
         This method is called by ComfyUI to validate inputs before execution.
-        It checks that the specified S3 object exists in the bucket.
+        It checks that the specified S3 object exists in the primary bucket,
+        and if not found, checks the fallback bucket if configured.
 
         Args:
             s3_key (str): The S3 object key to validate
@@ -284,13 +345,34 @@ class ReadImageFromS3:
         if not has_valid_extension:
             return f"File '{s3_key}' does not have a supported image extension. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
 
-        # Check if the object exists in S3
+        # Check if the object exists in primary S3
+        primary_exists = False
+        primary_error = None
         try:
             s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+            primary_exists = True
         except Exception as e:
-            return f"S3 object '{s3_key}' not found or inaccessible: {str(e)}"
+            primary_error = str(e)
 
-        return True
+        # If found in primary storage, validation passes
+        if primary_exists:
+            return True
+
+        # If not found in primary, check fallback storage if configured
+        if fallback_s3_client is not None:
+            try:
+                fallback_s3_client.head_object(Bucket=fallback_s3_bucket, Key=s3_key)
+                # Found in fallback storage, validation passes
+                return True
+            except Exception as fallback_e:
+                # Not found in either storage
+                return (
+                    f"S3 object '{s3_key}' not found in primary or fallback storage. "
+                    f"Primary error: {primary_error}. Fallback error: {str(fallback_e)}"
+                )
+        else:
+            # No fallback configured, return primary error
+            return f"S3 object '{s3_key}' not found or inaccessible: {primary_error}"
 
 
 class SaveImageToS3:
