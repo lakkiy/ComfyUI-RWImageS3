@@ -65,7 +65,7 @@ s3_client = boto3.client("s3", **s3_client_config)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def list_images_from_s3(prefix: str = "input/") -> List[str]:
+def list_images_from_s3(prefix: str = "") -> List[str]:
     """
     Retrieve a list of supported image files from the specified S3 prefix.
 
@@ -73,7 +73,7 @@ def list_images_from_s3(prefix: str = "input/") -> List[str]:
     filters them to include only files with supported image extensions.
 
     Args:
-        prefix (str): S3 prefix to search for images (default: "input/")
+        prefix (str): S3 prefix to search for images (default: "")
 
     Returns:
         List[str]: Sorted list of image filenames (without prefix) found in S3.
@@ -398,7 +398,7 @@ class SaveImageToS3:
 
         # Generate timestamped filename
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        s3_key = f"output/{filename_prefix}_{timestamp}.png"
+        s3_key = f"{filename_prefix}_{timestamp}.png"
 
         try:
             # Upload file to S3
