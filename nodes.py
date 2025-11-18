@@ -42,17 +42,22 @@ AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")  # Default to us-east-1
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+ENDPOINT_URL = os.getenv("ENDPOINT_URL")  # Custom S3-compatible endpoint (optional, e.g., Cloudflare R2)
 
 # Supported image file extensions (single-frame formats only)
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff")
 
 # Initialize AWS S3 client with credentials
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION,
-)
+# If ENDPOINT_URL is set, use it for S3-compatible services (e.g., Cloudflare R2, MinIO)
+s3_client_config = {
+    "aws_access_key_id": AWS_ACCESS_KEY,
+    "aws_secret_access_key": AWS_SECRET_KEY,
+    "region_name": AWS_REGION,
+}
+if ENDPOINT_URL:
+    s3_client_config["endpoint_url"] = ENDPOINT_URL
+
+s3_client = boto3.client("s3", **s3_client_config)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
