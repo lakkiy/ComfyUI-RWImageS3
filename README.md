@@ -5,6 +5,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 ## Features
 
 - Read an image directly from S3 using an explicit `s3_key`
+- Automatically fall back to the first frame when the downloaded object is actually a video/live photo
 - Save an IMAGE tensor to S3 using an explicit `s3_key`
 - Save a local video file to S3 using an explicit `video_path` and `s3_key`
 - Optional fallback S3 storage for image reads
@@ -27,7 +28,12 @@ cd ComfyUI-RWImageS3
 pip install -r requirements.txt
 ```
 
-3. Configure `.env`:
+3. Ensure `ffmpeg` is available in `PATH` if you want `Read Image From S3` to support:
+   - files whose extension says `.png/.jpg` but whose actual contents are video
+   - Apple Live Photo companion videos (`.mov`)
+   - other video inputs where only the first frame should be used
+
+4. Configure `.env`:
 
 ```env
 AWS_ACCESS_KEY_ID=your_access_key
@@ -46,7 +52,7 @@ S3_BUCKET_NAME=your-bucket
 # FALLBACK_ENDPOINT_URL=https://your-fallback-endpoint
 ```
 
-4. Restart ComfyUI.
+5. Restart ComfyUI.
 
 ## Nodes
 
@@ -61,9 +67,14 @@ Output:
 - `IMAGE`
 
 Behavior:
-- Downloads image from primary storage; if configured and primary fails, tries fallback storage
-- Applies EXIF transpose
-- Converts image to RGB tensor in `[0, 1]`
+- Downloads media from primary storage; if configured and primary fails, tries fallback storage
+- First tries normal still-image decoding with Pillow
+- If Pillow cannot decode the file, automatically uses `ffmpeg` to extract the first frame
+- This means it can handle:
+  - normal images
+  - files mislabeled as `.png/.jpg` in S3 but actually containing video
+  - Apple Live Photo video files such as `.mov`
+- Converts output to RGB tensor in `[0, 1]`
 
 ### Save Image To S3
 
@@ -106,7 +117,9 @@ Input:
 Output:
 - `BOOLEAN`
 
-## Supported image formats (read)
+## Supported inputs for Read Image From S3
+
+### Direct still-image decode
 
 - `.png`
 - `.jpg`
@@ -114,6 +127,15 @@ Output:
 - `.bmp`
 - `.webp`
 - `.tiff`
+
+### First-frame fallback via `ffmpeg`
+
+- `.mp4`
+- `.mov`
+- `.webm`
+- `.mkv`
+- `.avi`
+- mislabeled files where the extension is image-like but the file contents are actually video
 
 ## Required IAM permissions
 
@@ -135,6 +157,9 @@ Output:
 - `Local video file not found`
   - Confirm the file exists on disk and ComfyUI has access.
 
+- `ffmpeg is required to decode video/live photo inputs, but it was not found in PATH`
+  - Install `ffmpeg` and make sure the ComfyUI process can find it.
+
 ## Version
 
-Current version: `3.0.0`
+Current version: `3.1.0`

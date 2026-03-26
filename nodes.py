@@ -1,26 +1,19 @@
 """
-ComfyUI S3 Media Nodes
+ComfyUI nodes for reading media from S3 and saving images/videos back to S3.
 
-Custom ComfyUI nodes for reading images from S3 and uploading images/videos to S3.
+Highlights:
+- ReadImageFromS3 reads a normal image from S3
+- If the downloaded file is actually a video / Apple Live Photo video, it uses
+  ffmpeg and returns the first frame as a ComfyUI IMAGE
+- SaveImageToS3 uploads an IMAGE tensor as PNG
+- SaveVideoToS3 uploads a local video file
 
-Included nodes:
-- ReadImageFromS3
-- SaveImageToS3
-- SaveVideoToS3
-- IsMaskEmptyNode
-
-Requirements:
-- boto3
-- torch
-- pillow
-- python-dotenv
-- numpy
-
-GitHub: https://github.com/lakkiy/ComfyUI-RWImageS3
-Version: 3.0.0
+Version: 3.1.0
 """
 
 import os
+import shutil
+import subprocess
 import tempfile
 import time
 from typing import Any, Dict, Tuple, Union
@@ -29,39 +22,35 @@ import boto3
 import numpy as np
 import torch
 from dotenv import load_dotenv
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-# ═════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION AND INITIALIZATION
-# ═════════════════════════════════════════════════════════════════════════════
 
-# Load environment variables from .env file (must be located next to this script)
+# Load environment variables from .env
 load_dotenv()
 
-# AWS Configuration - Retrieved from environment variables
+
+# Primary S3 config
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")  # Default to us-east-1
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
-ENDPOINT_URL = os.getenv(
-    "ENDPOINT_URL"
-)  # Custom S3-compatible endpoint (optional, e.g., Cloudflare R2)
+ENDPOINT_URL = os.getenv("ENDPOINT_URL")
 
-# Fallback S3 Configuration (optional) - Retrieved from environment variables
+# Optional fallback S3 config for reads
 FALLBACK_AWS_ACCESS_KEY = os.getenv("FALLBACK_AWS_ACCESS_KEY_ID")
 FALLBACK_AWS_SECRET_KEY = os.getenv("FALLBACK_AWS_SECRET_ACCESS_KEY")
 FALLBACK_AWS_REGION = os.getenv("FALLBACK_AWS_REGION", "us-east-1")
 FALLBACK_S3_BUCKET_NAME = os.getenv("FALLBACK_S3_BUCKET_NAME")
 FALLBACK_ENDPOINT_URL = os.getenv("FALLBACK_ENDPOINT_URL")
 
-# Supported image file extensions (single-frame formats only)
-ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff")
-
-# Supported video file extensions for SaveVideoToS3
+# SaveVideoToS3 only accepts these local video extensions
 ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
 
-# Initialize AWS S3 client with credentials
-# If ENDPOINT_URL is set, use it for S3-compatible services (e.g., Cloudflare R2, MinIO)
+# Optional: used by ReadImageFromS3 when the file is actually a video
+FFMPEG_PATH = shutil.which("ffmpeg")
+
+
+# Primary S3 client
 s3_client_config = {
     "aws_access_key_id": AWS_ACCESS_KEY,
     "aws_secret_access_key": AWS_SECRET_KEY,
@@ -72,7 +61,8 @@ if ENDPOINT_URL:
 
 s3_client = boto3.client("s3", **s3_client_config)
 
-# Initialize fallback S3 client if fallback credentials are provided
+
+# Optional fallback S3 client
 fallback_s3_client = None
 fallback_s3_bucket = None
 if FALLBACK_AWS_ACCESS_KEY and FALLBACK_AWS_SECRET_KEY and FALLBACK_S3_BUCKET_NAME:
@@ -89,45 +79,19 @@ if FALLBACK_AWS_ACCESS_KEY and FALLBACK_AWS_SECRET_KEY and FALLBACK_S3_BUCKET_NA
     print(f"Fallback S3 client initialized: bucket={FALLBACK_S3_BUCKET_NAME}")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# COMFYUI NODE CLASSES
-# ═════════════════════════════════════════════════════════════════════════════
-
-
 class ReadImageFromS3:
     """
-    ComfyUI Node: Read Image From S3
+    Read one file from S3 and return it as a ComfyUI IMAGE.
 
-    This node provides functionality to load images directly from AWS S3 storage
-    into ComfyUI workflows using custom S3 object keys. Users can specify the full
-    S3 path to their image files, allowing for flexible folder structures.
-    The node processes images through PIL for proper orientation and format conversion,
-    and returns them as normalized PyTorch tensors ready for ComfyUI processing.
-
-    Features:
-    - Custom S3 path input (user can specify any S3 object key)
-    - Automatic EXIF orientation correction
-    - RGBA to RGB conversion with proper alpha handling
-    - Tensor normalization to [0, 1] range
-    - S3 object existence validation
-    - Error handling for network and file operations
-
-    Input:
-    - s3_key: Text input for full S3 object key (e.g., "my-folder/image.png")
-
-    Output:
-    - IMAGE: PyTorch tensor of shape [1, H, W, 3] with RGB values in [0, 1] range
+    Flow:
+    1. Download from primary S3
+    2. If needed, try fallback S3
+    3. Try to read it as a normal image
+    4. If that fails, use ffmpeg and take the first frame
     """
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
-        """
-        Define the input schema for the ComfyUI node interface.
-
-        Returns:
-            Dict containing the required input specifications for ComfyUI.
-            The s3_key parameter allows users to specify the full S3 object path.
-        """
         return {
             "required": {
                 "s3_key": (
@@ -137,120 +101,142 @@ class ReadImageFromS3:
             }
         }
 
-    # ComfyUI node metadata
     CATEGORY = "image"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "load_image"
 
-    def load_image(self, s3_key: str) -> Tuple[torch.Tensor]:
-        """
-        Load and process an image from S3 storage with fallback support.
+    def _image_to_tensor(self, pil_image: Image.Image) -> torch.Tensor:
+        pil_image = ImageOps.exif_transpose(pil_image)
+        rgb_image = pil_image.convert("RGB")
+        image_array = np.array(rgb_image).astype(np.float32) / 255.0
+        return torch.from_numpy(image_array)[None, ...]
 
-        This method downloads the specified image from S3 using the full S3 object key,
-        applies EXIF orientation correction, converts to RGBA format, extracts RGB channels,
-        and normalizes the pixel values to create a PyTorch tensor suitable for ComfyUI processing.
+    def _read_image_file(self, file_path: str) -> torch.Tensor:
+        with Image.open(file_path) as pil_image:
+            return self._image_to_tensor(pil_image)
 
-        If the primary S3 storage fails to retrieve the image (e.g., 404 not found),
-        the method automatically attempts to download from the fallback S3 storage if configured.
+    def _read_first_video_frame(self, file_path: str, s3_key: str) -> torch.Tensor:
+        if not FFMPEG_PATH:
+            raise RuntimeError(
+                "ffmpeg is required to decode video/live photo inputs, but it was not found in PATH"
+            )
 
-        Args:
-            s3_key (str): Full S3 object key path (e.g., "my-folder/image.png")
+        frame_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        frame_path = frame_file.name
+        frame_file.close()
 
-        Returns:
-            Tuple[torch.Tensor]: Single-element tuple containing the processed image
-                                tensor with shape [1, H, W, 3] and values in [0, 1]
+        try:
+            result = subprocess.run(
+                [
+                    FFMPEG_PATH,
+                    "-nostdin",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    file_path,
+                    "-frames:v",
+                    "1",
+                    frame_path,
+                ],
+                capture_output=True,
+                text=True,
+            )
 
-        Raises:
-            RuntimeError: If S3 download fails from both primary and fallback storage,
-                         or if image processing encounters errors
-        """
-
-        # Create temporary file with appropriate extension for PIL compatibility
-        file_extension = os.path.splitext(s3_key)[1]
-        with tempfile.NamedTemporaryFile(
-            delete=True, suffix=file_extension
-        ) as temp_file:
-            # Try primary S3 storage first
-            download_successful = False
-            primary_error = None
-
-            try:
-                # Download image from primary S3 to temporary file
-                start_time = time.time()
-                s3_client.download_file(S3_BUCKET_NAME, s3_key, temp_file.name)
-                end_time = time.time()
-                download_duration = end_time - start_time
-                print(
-                    f"S3 download completed (primary): s3_key='{s3_key}', duration={download_duration:.3f}s"
+            if (
+                result.returncode != 0
+                or not os.path.exists(frame_path)
+                or os.path.getsize(frame_path) == 0
+            ):
+                ffmpeg_error = (result.stderr or "").strip() or "unknown ffmpeg error"
+                raise RuntimeError(
+                    f"ffmpeg could not extract a first frame for '{s3_key}': {ffmpeg_error}"
                 )
-                download_successful = True
-            except Exception as e:
-                primary_error = e
-                print(f"Primary S3 download failed for '{s3_key}': {e}")
 
-                # Try fallback S3 storage if configured
-                if fallback_s3_client is not None:
-                    try:
-                        print(f"Attempting fallback S3 download for '{s3_key}'...")
-                        start_time = time.time()
-                        fallback_s3_client.download_file(
-                            fallback_s3_bucket, s3_key, temp_file.name
-                        )
-                        end_time = time.time()
-                        download_duration = end_time - start_time
-                        print(
-                            f"S3 download completed (fallback): s3_key='{s3_key}', duration={download_duration:.3f}s"
-                        )
-                        download_successful = True
-                    except Exception as fallback_e:
-                        print(
-                            f"Fallback S3 download also failed for '{s3_key}': {fallback_e}"
-                        )
-                        raise RuntimeError(
-                            f"ReadImageFromS3: Failed to download '{s3_key}' from both primary and fallback storage. "
-                            f"Primary error: {primary_error}. Fallback error: {fallback_e}"
-                        )
-                else:
-                    # No fallback configured, raise the primary error
-                    raise RuntimeError(
-                        f"ReadImageFromS3: Failed to download '{s3_key}': {primary_error}"
-                    )
+            return self._read_image_file(frame_path)
+        finally:
+            if os.path.exists(frame_path):
+                os.remove(frame_path)
 
-            if not download_successful:
+    def _download_to_temp_file(self, s3_key: str) -> str:
+        if not S3_BUCKET_NAME or not S3_BUCKET_NAME.strip():
+            raise RuntimeError(
+                "ReadImageFromS3: S3_BUCKET_NAME is not configured. Please set it in your .env file."
+            )
+
+        temp_file = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=os.path.splitext(s3_key)[1] or ".bin",
+        )
+        temp_path = temp_file.name
+        temp_file.close()
+
+        try:
+            start_time = time.time()
+            s3_client.download_file(S3_BUCKET_NAME, s3_key, temp_path)
+            print(
+                f"S3 download completed (primary): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
+            )
+            return temp_path
+        except Exception as primary_error:
+            print(f"Primary S3 download failed for '{s3_key}': {primary_error}")
+
+            if fallback_s3_client is None:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
                 raise RuntimeError(
                     f"ReadImageFromS3: Failed to download '{s3_key}': {primary_error}"
                 )
 
-            # Load and process the image using PIL
             try:
-                pil_image = Image.open(temp_file.name)
-
-                # Apply EXIF orientation correction to handle rotated images
-                pil_image = ImageOps.exif_transpose(pil_image)
-
-                # Convert to RGBA to ensure consistent 4-channel format
-                rgba_image = pil_image.convert("RGBA")
-
-                # Convert PIL image to numpy array and normalize to [0, 1]
-                image_array = (
-                    np.array(rgba_image).astype(np.float32) / 255.0
-                )  # Shape: [H, W, 4]
-
-                # Extract RGB channels (ignore alpha channel)
-                rgb_array = image_array[:, :, :3]  # Shape: [H, W, 3]
-
-                # Convert to PyTorch tensor and add batch dimension
-                image_tensor = torch.from_numpy(rgb_array)[
-                    None, ...
-                ]  # Shape: [1, H, W, 3]
-
-                return (image_tensor,)
-
-            except Exception as e:
-                raise RuntimeError(
-                    f"ReadImageFromS3: Failed to process image '{s3_key}': {e}"
+                print(f"Attempting fallback S3 download for '{s3_key}'...")
+                start_time = time.time()
+                fallback_s3_client.download_file(fallback_s3_bucket, s3_key, temp_path)
+                print(
+                    f"S3 download completed (fallback): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
                 )
+                return temp_path
+            except Exception as fallback_error:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                print(
+                    f"Fallback S3 download also failed for '{s3_key}': {fallback_error}"
+                )
+                raise RuntimeError(
+                    f"ReadImageFromS3: Failed to download '{s3_key}' from both primary and fallback storage. "
+                    f"Primary error: {primary_error}. Fallback error: {fallback_error}"
+                )
+
+    def load_image(self, s3_key: str) -> Tuple[torch.Tensor]:
+        s3_key = (s3_key or "").strip()
+        temp_path = self._download_to_temp_file(s3_key)
+
+        try:
+            image_read_error = None
+
+            # Step 1: normal image
+            try:
+                return (self._read_image_file(temp_path),)
+            except (UnidentifiedImageError, OSError, ValueError) as error:
+                image_read_error = str(error)
+                print(
+                    f"ReadImageFromS3: PIL decode failed for '{s3_key}', attempting first-frame fallback: {image_read_error}"
+                )
+
+            # Step 2: video / live photo first frame
+            try:
+                image_tensor = self._read_first_video_frame(temp_path, s3_key)
+                print(f"ReadImageFromS3: First-frame fallback succeeded for '{s3_key}'")
+                return (image_tensor,)
+            except Exception as frame_error:
+                raise RuntimeError(
+                    f"ReadImageFromS3: Failed to process '{s3_key}' as either an image or a video/live photo. "
+                    f"Image read error: {image_read_error}. Video/live photo fallback error: {frame_error}"
+                )
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     @classmethod
     def IS_CHANGED(cls, s3_key: str) -> str:
@@ -291,7 +277,7 @@ class ReadImageFromS3:
 
 
 class SaveImageToS3:
-    """Save an IMAGE tensor to S3 using an explicit s3_key (folder + filename)."""
+    """Save one ComfyUI IMAGE tensor to S3 as a PNG file."""
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -324,8 +310,8 @@ class SaveImageToS3:
                 "SaveImageToS3: S3_BUCKET_NAME is not configured. Please set it in your .env file."
             )
 
-        processed_tensor = image[0] if image.ndim == 4 else image
-        image_array = processed_tensor.detach().cpu().numpy()
+        image_tensor = image[0] if image.ndim == 4 else image
+        image_array = image_tensor.detach().cpu().numpy()
         image_array = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
         pil_image = Image.fromarray(image_array)
 
@@ -337,13 +323,13 @@ class SaveImageToS3:
 
             start_time = time.time()
             s3_client.upload_file(temp_file_path, S3_BUCKET_NAME, s3_key)
-            end_time = time.time()
-            upload_duration = end_time - start_time
             print(
-                f"S3 upload completed (image): s3_key='{s3_key}', duration={upload_duration:.3f}s"
+                f"S3 upload completed (image): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
-        except Exception as e:
-            raise RuntimeError(f"SaveImageToS3: Failed to upload to '{s3_key}': {e}")
+        except Exception as error:
+            raise RuntimeError(
+                f"SaveImageToS3: Failed to upload to '{s3_key}': {error}"
+            )
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
@@ -352,7 +338,7 @@ class SaveImageToS3:
 
 
 class SaveVideoToS3:
-    """Upload a local video file to S3 using an explicit s3_key (folder + filename)."""
+    """Upload one local video file to S3."""
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -400,37 +386,32 @@ class SaveVideoToS3:
                 f"SaveVideoToS3: Local video file not found: '{local_video_path}'"
             )
 
-        ext = os.path.splitext(local_video_path)[1].lower()
-        if ext and ext not in ALLOWED_VIDEO_EXTENSIONS:
+        extension = os.path.splitext(local_video_path)[1].lower()
+        if extension and extension not in ALLOWED_VIDEO_EXTENSIONS:
             raise RuntimeError(
-                f"SaveVideoToS3: Unsupported video extension '{ext}'. "
+                f"SaveVideoToS3: Unsupported video extension '{extension}'. "
                 f"Allowed: {ALLOWED_VIDEO_EXTENSIONS}"
             )
 
         try:
             start_time = time.time()
             s3_client.upload_file(local_video_path, S3_BUCKET_NAME, s3_key)
-            end_time = time.time()
-            upload_duration = end_time - start_time
             print(
-                f"S3 upload completed (video): s3_key='{s3_key}', duration={upload_duration:.3f}s"
+                f"S3 upload completed (video): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
-        except Exception as e:
+        except Exception as error:
             raise RuntimeError(
-                f"SaveVideoToS3: Failed to upload '{local_video_path}' to '{s3_key}': {e}"
+                f"SaveVideoToS3: Failed to upload '{local_video_path}' to '{s3_key}': {error}"
             )
 
         return ()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# UTILITY NODES
-# ═════════════════════════════════════════════════════════════════════════════
-
-
 class IsMaskEmptyNode:
+    """Return True if every value in the mask is 0."""
+
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
         return {
             "required": {
                 "mask": ("MASK",),
@@ -445,21 +426,10 @@ class IsMaskEmptyNode:
         return (bool(torch.all(mask == 0)),)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# COMFYUI NODE REGISTRATION
-# ═════════════════════════════════════════════════════════════════════════════
-
-# Node class mappings for ComfyUI discovery
-# This dictionary maps the display names shown in ComfyUI to the actual node classes
+# Names shown in ComfyUI
 NODE_CLASS_MAPPINGS = {
     "Read Image From S3": ReadImageFromS3,
     "Save Image To S3": SaveImageToS3,
     "Save Video To S3": SaveVideoToS3,
     "Is Mask Empty": IsMaskEmptyNode,
 }
-
-# Optional: Display name mappings (if you want different names in the UI)
-# NODE_DISPLAY_NAME_MAPPINGS = {
-#     "ReadImageFromS3": "Read Image From S3",
-#     "SaveImageToS3": "Save Image To S3",
-# }
