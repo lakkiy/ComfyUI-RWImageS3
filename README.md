@@ -5,6 +5,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 ## Features
 
 - Read an image directly from S3 using an explicit `s3_key`
+- Support HEIC/HEIF uploads when `pillow-heif` is installed, even if the S3 key is mislabeled as `.png/.jpg`
 - Automatically fall back to the first frame when the downloaded object is actually a video/live photo
 - Save an IMAGE tensor to S3 using an explicit `s3_key`
 - Save a local video file to S3 using an explicit `video_path` and `s3_key`
@@ -27,6 +28,8 @@ cd ComfyUI-RWImageS3
 ```bash
 pip install -r requirements.txt
 ```
+
+`requirements.txt` now includes `pillow-heif`, so `Read Image From S3` can support HEIC/HEIF uploads whose S3 key may still look like `.png/.jpg`.
 
 3. Ensure `ffmpeg` is available in `PATH` if you want `Read Image From S3` to support:
    - files whose extension says `.png/.jpg` but whose actual contents are video
@@ -68,10 +71,14 @@ Output:
 
 Behavior:
 - Downloads media from primary storage; if configured and primary fails, tries fallback storage
-- First tries normal still-image decoding with Pillow
-- If Pillow cannot decode the file, automatically uses `ffmpeg` to extract the first frame
+- First tries image decoding with Pillow
+- If `pillow-heif` is installed, this also covers HEIC/HEIF files
+- If the image is animated, it uses the first frame
+- If Pillow cannot decode the file, it automatically uses `ffmpeg` to extract the first frame
 - This means it can handle:
   - normal images
+  - animated images
+  - HEIC/HEIF uploads
   - files mislabeled as `.png/.jpg` in S3 but actually containing video
   - Apple Live Photo video files such as `.mov`
 - Converts output to RGB tensor in `[0, 1]`
@@ -119,7 +126,7 @@ Output:
 
 ## Supported inputs for Read Image From S3
 
-### Direct still-image decode
+### Direct image decode with Pillow
 
 - `.png`
 - `.jpg`
@@ -127,6 +134,13 @@ Output:
 - `.bmp`
 - `.webp`
 - `.tiff`
+
+### HEIC / HEIF image decode with Pillow + `pillow-heif`
+
+- `.heic`
+- `.heif`
+- mislabeled files where the extension is image-like but the file contents are actually HEIC/HEIF
+- if the HEIC/HEIF file is animated, the first frame is used
 
 ### First-frame fallback via `ffmpeg`
 
@@ -159,6 +173,10 @@ Output:
 
 - `ffmpeg is required to decode video/live photo inputs, but it was not found in PATH`
   - Install `ffmpeg` and make sure the ComfyUI process can find it.
+
+- HEIC/HEIF files still cannot be read
+  - Install `pillow-heif` in the same Python environment as ComfyUI.
+  - If the file is not really HEIC/HEIF but a video-like container, keep `ffmpeg` installed as fallback.
 
 ## Version
 

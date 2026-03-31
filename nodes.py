@@ -24,6 +24,15 @@ import torch
 from dotenv import load_dotenv
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+# Optional: lets Pillow read HEIC/HEIF files, even if the S3 key says .png/.jpg.
+# If pillow-heif is not installed, HEIC/HEIF files will fall back to ffmpeg logic below.
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:
+    register_heif_opener = None
+
 
 # Load environment variables from .env
 load_dotenv()
@@ -86,8 +95,11 @@ class ReadImageFromS3:
     Flow:
     1. Download from primary S3
     2. If needed, try fallback S3
-    3. Try to read it as a normal image
+    3. Try to read it as an image
+       - normal image: read it directly
+       - animated image / HEIF: use the first frame
     4. If that fails, use ffmpeg and take the first frame
+       - useful for mp4/mov and other video-like uploads
     """
 
     @classmethod
@@ -114,6 +126,10 @@ class ReadImageFromS3:
 
     def _read_image_file(self, file_path: str) -> torch.Tensor:
         with Image.open(file_path) as pil_image:
+            if getattr(pil_image, "is_animated", False):
+                pil_image.seek(0)
+                return self._image_to_tensor(pil_image.copy())
+
             return self._image_to_tensor(pil_image)
 
     def _read_first_video_frame(self, file_path: str, s3_key: str) -> torch.Tensor:
@@ -215,7 +231,7 @@ class ReadImageFromS3:
         try:
             image_read_error = None
 
-            # Step 1: normal image
+            # Step 1: image / animated image / HEIF
             try:
                 return (self._read_image_file(temp_path),)
             except (UnidentifiedImageError, OSError, ValueError) as error:
@@ -224,7 +240,7 @@ class ReadImageFromS3:
                     f"ReadImageFromS3: PIL decode failed for '{s3_key}', attempting first-frame fallback: {image_read_error}"
                 )
 
-            # Step 2: video / live photo first frame
+            # Step 2: video / live photo video first frame
             try:
                 image_tensor = self._read_first_video_frame(temp_path, s3_key)
                 print(f"ReadImageFromS3: First-frame fallback succeeded for '{s3_key}'")
