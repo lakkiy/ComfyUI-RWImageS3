@@ -45,12 +45,31 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 ENDPOINT_URL = os.getenv("ENDPOINT_URL")
 
-# Optional fallback S3 config for reads
-FALLBACK_AWS_ACCESS_KEY = os.getenv("FALLBACK_AWS_ACCESS_KEY_ID")
-FALLBACK_AWS_SECRET_KEY = os.getenv("FALLBACK_AWS_SECRET_ACCESS_KEY")
-FALLBACK_AWS_REGION = os.getenv("FALLBACK_AWS_REGION", "us-east-1")
-FALLBACK_S3_BUCKET_NAME = os.getenv("FALLBACK_S3_BUCKET_NAME")
-FALLBACK_ENDPOINT_URL = os.getenv("FALLBACK_ENDPOINT_URL")
+# Optional fallback S3 configs for reads.
+# The first fallback uses the FALLBACK_* prefix; additional ones use
+# FALLBACK_2_*, FALLBACK_3_*, ... (scanned until a bucket name is missing).
+def _load_fallback_configs():
+    configs = []
+    index = 1
+    while True:
+        prefix = "FALLBACK_" if index == 1 else f"FALLBACK_{index}_"
+        bucket = os.getenv(f"{prefix}S3_BUCKET_NAME")
+        access_key = os.getenv(f"{prefix}AWS_ACCESS_KEY_ID")
+        secret_key = os.getenv(f"{prefix}AWS_SECRET_ACCESS_KEY")
+        if not (bucket and access_key and secret_key):
+            # Stop at the first gap so ordering stays explicit
+            break
+        configs.append(
+            {
+                "bucket": bucket,
+                "aws_access_key_id": access_key,
+                "aws_secret_access_key": secret_key,
+                "region_name": os.getenv(f"{prefix}AWS_REGION", "us-east-1"),
+                "endpoint_url": os.getenv(f"{prefix}ENDPOINT_URL"),
+            }
+        )
+        index += 1
+    return configs
 
 # SaveVideoToS3 only accepts these local video extensions
 ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
@@ -71,21 +90,21 @@ if ENDPOINT_URL:
 s3_client = boto3.client("s3", **s3_client_config)
 
 
-# Optional fallback S3 client
-fallback_s3_client = None
-fallback_s3_bucket = None
-if FALLBACK_AWS_ACCESS_KEY and FALLBACK_AWS_SECRET_KEY and FALLBACK_S3_BUCKET_NAME:
-    fallback_s3_client_config = {
-        "aws_access_key_id": FALLBACK_AWS_ACCESS_KEY,
-        "aws_secret_access_key": FALLBACK_AWS_SECRET_KEY,
-        "region_name": FALLBACK_AWS_REGION,
+# Optional fallback S3 clients, tried in order for reads
+fallback_s3_sources = []
+for _fallback_config in _load_fallback_configs():
+    _client_config = {
+        "aws_access_key_id": _fallback_config["aws_access_key_id"],
+        "aws_secret_access_key": _fallback_config["aws_secret_access_key"],
+        "region_name": _fallback_config["region_name"],
     }
-    if FALLBACK_ENDPOINT_URL:
-        fallback_s3_client_config["endpoint_url"] = FALLBACK_ENDPOINT_URL
+    if _fallback_config["endpoint_url"]:
+        _client_config["endpoint_url"] = _fallback_config["endpoint_url"]
 
-    fallback_s3_client = boto3.client("s3", **fallback_s3_client_config)
-    fallback_s3_bucket = FALLBACK_S3_BUCKET_NAME
-    print(f"Fallback S3 client initialized: bucket={FALLBACK_S3_BUCKET_NAME}")
+    fallback_s3_sources.append(
+        (boto3.client("s3", **_client_config), _fallback_config["bucket"])
+    )
+    print(f"Fallback S3 client initialized: bucket={_fallback_config['bucket']}")
 
 
 class ReadImageFromS3:
@@ -94,7 +113,7 @@ class ReadImageFromS3:
 
     Flow:
     1. Download from primary S3
-    2. If needed, try fallback S3
+    2. If needed, try each fallback S3 source in order
     3. Try to read it as an image
        - normal image: read it directly
        - animated image / HEIF: use the first frame
@@ -188,41 +207,30 @@ class ReadImageFromS3:
         temp_path = temp_file.name
         temp_file.close()
 
-        try:
-            start_time = time.time()
-            s3_client.download_file(S3_BUCKET_NAME, s3_key, temp_path)
-            print(
-                f"S3 download completed (primary): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
-            )
-            return temp_path
-        except Exception as primary_error:
-            print(f"Primary S3 download failed for '{s3_key}': {primary_error}")
+        sources = [("primary", s3_client, S3_BUCKET_NAME)] + [
+            (f"fallback {i}", client, bucket)
+            for i, (client, bucket) in enumerate(fallback_s3_sources, start=1)
+        ]
 
-            if fallback_s3_client is None:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise RuntimeError(
-                    f"ReadImageFromS3: Failed to download '{s3_key}': {primary_error}"
-                )
-
+        errors = []
+        for label, client, bucket in sources:
             try:
-                print(f"Attempting fallback S3 download for '{s3_key}'...")
                 start_time = time.time()
-                fallback_s3_client.download_file(fallback_s3_bucket, s3_key, temp_path)
+                client.download_file(bucket, s3_key, temp_path)
                 print(
-                    f"S3 download completed (fallback): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
+                    f"S3 download completed ({label}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
                 )
                 return temp_path
-            except Exception as fallback_error:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                print(
-                    f"Fallback S3 download also failed for '{s3_key}': {fallback_error}"
-                )
-                raise RuntimeError(
-                    f"ReadImageFromS3: Failed to download '{s3_key}' from both primary and fallback storage. "
-                    f"Primary error: {primary_error}. Fallback error: {fallback_error}"
-                )
+            except Exception as error:
+                print(f"S3 download failed ({label}) for '{s3_key}': {error}")
+                errors.append(f"{label}: {error}")
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise RuntimeError(
+            f"ReadImageFromS3: Failed to download '{s3_key}' from all configured storage. "
+            + " | ".join(errors)
+        )
 
     def load_image(self, s3_key: str) -> Tuple[torch.Tensor]:
         s3_key = (s3_key or "").strip()
