@@ -16,13 +16,15 @@ pip install boto3 torch pillow python-dotenv numpy
 ## Configuration
 
 ### Environment Setup
-1. Create a `.env` file in the root directory with:
+1. Create a `.env` file in the root directory (add `S3_2_*`, `S3_3_*`, ... for more key sets):
 ```env
-AWS_ACCESS_KEY_ID=your_access_key_here
-AWS_SECRET_ACCESS_KEY=your_secret_key_here
-AWS_REGION=us-east-1
-S3_BUCKET_NAME=your-bucket-name
+S3_NAME=aws
+S3_ACCESS_KEY_ID=your_access_key_here
+S3_SECRET_ACCESS_KEY=your_secret_key_here
+S3_REGION=us-east-1
+S3_BUCKET=your-bucket-name
 ```
+The old `AWS_ACCESS_KEY_ID` / `S3_BUCKET_NAME` / `FALLBACK_*` variables still work.
 
 2. Set up S3 bucket structure (flexible - users can now specify custom paths):
 ```
@@ -52,7 +54,9 @@ Note: With the updated ReadImageFromS3 node, users can specify any S3 object key
    - Tensors are normalized to [0, 1] range for ComfyUI compatibility
 
 2. **S3 Integration**:
-   - Uses boto3 client initialized with environment variables
+   - Uses boto3 clients built from key sets in env: first set `S3_NAME`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_BUCKET`, `S3_ENDPOINT_URL`; extra sets `S3_2_*`, `S3_3_*`, ...
+   - Legacy env (`AWS_*`/`S3_BUCKET_NAME` as "primary", `FALLBACK_*`, `FALLBACK_2_*`, ...) still loads, before the numbered sets
+   - Nodes expose an optional `s3_source` dropdown with the key set names (read: `auto` tries all in order; save: defaults to the first set)
    - Supports standard image formats: .png, .jpg, .jpeg, .bmp, .webp, .tiff
    - Custom S3 object key input (users can specify any path within the bucket)
    - S3 object existence validation before processing

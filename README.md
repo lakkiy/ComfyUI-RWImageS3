@@ -9,7 +9,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 - Automatically fall back to the first frame when the downloaded object is actually a video/live photo
 - Save an IMAGE tensor to S3 using an explicit `s3_key`
 - Save a local video file to S3 using an explicit `video_path` and `s3_key`
-- Optional fallback S3 storage for image reads
+- Multiple named S3 key sets: pick one per node in ComfyUI, or let reads try them all in order
 - Optional custom S3 endpoint support (R2, MinIO, etc.)
 - Upload/download timing logs in ComfyUI console
 
@@ -36,30 +36,40 @@ pip install -r requirements.txt
    - Apple Live Photo companion videos (`.mov`)
    - other video inputs where only the first frame should be used
 
-4. Configure `.env`:
+4. Edit `.env` (it ships as a template). One key set is enough:
 
 ```env
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-AWS_REGION=us-east-1
-S3_BUCKET_NAME=your-bucket
-
-# Optional: custom S3-compatible endpoint
-# ENDPOINT_URL=https://your-endpoint
-
-# Optional fallback storage for reads
-# FALLBACK_AWS_ACCESS_KEY_ID=...
-# FALLBACK_AWS_SECRET_ACCESS_KEY=...
-# FALLBACK_AWS_REGION=us-east-1
-# FALLBACK_S3_BUCKET_NAME=...
-# FALLBACK_ENDPOINT_URL=https://your-fallback-endpoint
-
-# Optional additional fallbacks: FALLBACK_2_*, FALLBACK_3_*, ... (tried in order)
-# FALLBACK_2_AWS_ACCESS_KEY_ID=...
-# FALLBACK_2_AWS_SECRET_ACCESS_KEY=...
-# FALLBACK_2_S3_BUCKET_NAME=...
-# FALLBACK_2_ENDPOINT_URL=https://your-second-fallback-endpoint
+S3_NAME=aws
+S3_ACCESS_KEY_ID=your_access_key
+S3_SECRET_ACCESS_KEY=your_secret_key
+S3_REGION=us-east-1
+S3_BUCKET=your-bucket
+# S3_ENDPOINT_URL=https://your-endpoint   # optional, for R2 / MinIO / ...
 ```
+
+For more key sets, add numbered ones starting at 2:
+
+```env
+S3_2_NAME=r2
+S3_2_ACCESS_KEY_ID=...
+S3_2_SECRET_ACCESS_KEY=...
+S3_2_BUCKET=your-r2-bucket
+S3_2_ENDPOINT_URL=https://your-account.r2.cloudflarestorage.com
+
+# S3_3_*, S3_4_*, ... add as many as you need
+```
+
+- `BUCKET` is required; a set without it is ignored. `REGION` (default `us-east-1`) and `ENDPOINT_URL` are optional.
+- `NAME` is what shows up in the node's `s3_source` dropdown (default `default` for the first set, `s3_<N>` for the others). Names must be unique; duplicates get a ` (2)` suffix.
+- `auto` tries the first set, then `S3_2`, `S3_3`, ... Gaps are fine (`S3_2`, `S3_4`).
+
+Old-style variables still work, so existing `.env` files need no change. They are loaded before the numbered sets:
+
+| Old variables | Name in dropdown |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET_NAME`, `ENDPOINT_URL` | `primary` |
+| `FALLBACK_AWS_ACCESS_KEY_ID`, ..., `FALLBACK_S3_BUCKET_NAME`, `FALLBACK_ENDPOINT_URL` | `fallback 1` |
+| `FALLBACK_2_*`, `FALLBACK_3_*`, ... | `fallback 2`, `fallback 3`, ... |
 
 5. Restart ComfyUI.
 
@@ -71,12 +81,14 @@ Category: `image`
 
 Input:
 - `s3_key` (STRING): Full object key in bucket, e.g. `images/cat.png`
+- `s3_source` (optional dropdown): `auto (try in order)` (default) or one key set name
 
 Output:
 - `IMAGE`
 
 Behavior:
-- Downloads media from primary storage; if configured and primary fails, tries fallback storage
+- `auto`: tries each key set in order until one succeeds (same as the old primary → fallback behavior)
+- A named key set: downloads only from that one, nothing else is tried
 - First tries image decoding with Pillow
 - If `pillow-heif` is installed, this also covers HEIC/HEIF files
 - If the image is animated, it uses the first frame
@@ -96,6 +108,7 @@ Category: `image`
 Input:
 - `image` (IMAGE)
 - `s3_key` (STRING): Full target object key, e.g. `results/run1/frame_0001.png`
+- `s3_source` (optional dropdown): which key set to upload with (default: the first one)
 
 Output:
 - No outputs (`OUTPUT_NODE = True`)
@@ -111,6 +124,7 @@ Category: `image`
 Input:
 - `video_path` (STRING, force input): Absolute local path, e.g. `/root/autodl-tmp/ComfyUI/output/clip.mp4`
 - `s3_key` (STRING): Full target object key, e.g. `results/run1/clip.mp4`
+- `s3_source` (optional dropdown): which key set to upload with (default: the first one)
 
 Output:
 - No outputs (`OUTPUT_NODE = True`)
@@ -165,8 +179,11 @@ Output:
 
 ## Troubleshooting
 
-- `S3_BUCKET_NAME is not configured`
-  - Set `S3_BUCKET_NAME` in `.env` and restart ComfyUI.
+- `No S3 storage is configured`
+  - Set at least one key set (e.g. `S3_BUCKET`) in `.env` and restart ComfyUI.
+
+- `S3 source '...' is not configured`
+  - The workflow picked a key set name that is not in `.env` (renamed or removed). Pick another one in the dropdown.
 
 - `s3_key cannot be empty`
   - Provide a full object key including folder and filename.
@@ -186,4 +203,4 @@ Output:
 
 ## Version
 
-Current version: `3.1.0`
+Current version: `3.2.0`
