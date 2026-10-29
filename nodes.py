@@ -133,8 +133,7 @@ def _load_numbered_sources():
     sources = []
     # First set: S3_* (no number). Then S3_1_*, S3_2_*, ...
     prefixes = [("S3_", "default")] + [
-        (f"S3_{index}_", f"s3_{index}")
-        for index in range(1, MAX_NUMBERED_SOURCES + 1)
+        (f"S3_{index}_", f"s3_{index}") for index in range(1, MAX_NUMBERED_SOURCES + 1)
     ]
     for prefix, default_name in prefixes:
         bucket = _env(f"{prefix}BUCKET")
@@ -423,8 +422,49 @@ class ReadImageFromS3:
         return True
 
 
+def _batch_s3_key(s3_key: str, index: int, total: int) -> str:
+    """
+    Key for image `index` (0-based) of a batch.
+
+    A single image keeps the key as-is. A batch gets a 1-based, zero-padded
+    number before the extension: images/result.png -> images/result_00001.png
+    """
+    if total == 1:
+        return s3_key
+    stem, extension = os.path.splitext(s3_key)
+    return f"{stem}_{index + 1:05d}{extension}"
+
+
+def _native_preview(images: torch.Tensor, prompt=None, extra_pnginfo=None):
+    """
+    Build the UI preview with ComfyUI's own PreviewImage node, so it looks
+    and behaves exactly like a Preview Image node. Returns None outside
+    ComfyUI or if the preview fails; the S3 upload is not affected.
+    """
+    try:
+        # ComfyUI's top-level `nodes` module (not this file, which is
+        # imported as part of this package)
+        import nodes as comfy_nodes
+
+        preview_node_class = getattr(comfy_nodes, "PreviewImage", None)
+        if preview_node_class is None:
+            print("SaveImageToS3: ComfyUI PreviewImage not found, skipping preview")
+            return None
+        return preview_node_class().save_images(
+            images, prompt=prompt, extra_pnginfo=extra_pnginfo
+        )["ui"]
+    except Exception as error:
+        print(f"SaveImageToS3: Preview failed, skipping preview: {error}")
+        return None
+
+
 class SaveImageToS3:
-    """Save one ComfyUI IMAGE tensor to S3 as a PNG file."""
+    """
+    Save a ComfyUI IMAGE batch to S3 as PNG files, and show a preview.
+
+    - 1 image:  uploaded to s3_key as-is
+    - N images: uploaded to <stem>_00001<ext>, <stem>_00002<ext>, ...
+    """
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -433,11 +473,19 @@ class SaveImageToS3:
                 "image": ("IMAGE",),
                 "s3_key": (
                     "STRING",
-                    {"default": "images/result.png", "multiline": False},
+                    {
+                        "default": "images/result.png",
+                        "multiline": False,
+                        "tooltip": "For a batch, a number is added before the extension: result_00001.png, result_00002.png, ...",
+                    },
                 ),
             },
             "optional": {
                 "s3_source": _write_source_input(),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
@@ -447,17 +495,7 @@ class SaveImageToS3:
     FUNCTION = "save_to_s3"
     OUTPUT_NODE = True
 
-    def save_to_s3(self, image: torch.Tensor, s3_key: str, s3_source: str = ""):
-        if not isinstance(image, torch.Tensor):
-            raise ValueError("SaveImageToS3: 'image' parameter must be a torch.Tensor")
-
-        s3_key = (s3_key or "").strip().lstrip("/")
-        if not s3_key:
-            raise RuntimeError("SaveImageToS3: s3_key cannot be empty.")
-
-        source = _resolve_write_source(s3_source, "SaveImageToS3")
-
-        image_tensor = image[0] if image.ndim == 4 else image
+    def _upload_one(self, image_tensor: torch.Tensor, source, s3_key: str):
         image_array = image_tensor.detach().cpu().numpy()
         image_array = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
         pil_image = Image.fromarray(image_array)
@@ -473,15 +511,44 @@ class SaveImageToS3:
             print(
                 f"S3 upload completed (image, {source['name']}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
-        except Exception as error:
-            raise RuntimeError(
-                f"SaveImageToS3: Failed to upload to '{s3_key}': {error}"
-            )
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
 
-        return ()
+    def save_to_s3(
+        self,
+        image: torch.Tensor,
+        s3_key: str,
+        s3_source: str = "",
+        prompt=None,
+        extra_pnginfo=None,
+    ):
+        if not isinstance(image, torch.Tensor):
+            raise ValueError("SaveImageToS3: 'image' parameter must be a torch.Tensor")
+
+        s3_key = (s3_key or "").strip().lstrip("/")
+        if not s3_key:
+            raise RuntimeError("SaveImageToS3: s3_key cannot be empty.")
+
+        source = _resolve_write_source(s3_source, "SaveImageToS3")
+
+        images = image if image.ndim == 4 else image[None, ...]
+        total = images.shape[0]
+
+        uploaded = []
+        for index in range(total):
+            key = _batch_s3_key(s3_key, index, total)
+            try:
+                self._upload_one(images[index], source, key)
+            except Exception as error:
+                raise RuntimeError(
+                    f"SaveImageToS3: Failed to upload to '{key}' ({index + 1}/{total}): {error}. "
+                    f"Already uploaded: {uploaded or 'none'}"
+                )
+            uploaded.append(key)
+
+        ui = _native_preview(images, prompt, extra_pnginfo)
+        return {"ui": ui} if ui else ()
 
 
 class SaveVideoToS3:

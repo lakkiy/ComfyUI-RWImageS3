@@ -7,7 +7,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 - Read an image directly from S3 using an explicit `s3_key`
 - Support HEIC/HEIF uploads when `pillow-heif` is installed, even if the S3 key is mislabeled as `.png/.jpg`
 - Automatically fall back to the first frame when the downloaded object is actually a video/live photo
-- Save an IMAGE tensor to S3 using an explicit `s3_key`
+- Save an IMAGE batch to S3 using an explicit `s3_key`, with a native ComfyUI preview in the node
 - Save a local video file to S3 using an explicit `video_path` and `s3_key`
 - Multiple named S3 key sets: pick one per node in ComfyUI, or let reads try them all in order
 - Optional custom S3 endpoint support (R2, MinIO, etc.)
@@ -107,14 +107,17 @@ Category: `image`
 
 Input:
 - `image` (IMAGE)
-- `s3_key` (STRING): Full target object key, e.g. `results/run1/frame_0001.png`
+- `s3_key` (STRING): Full target object key, e.g. `results/run1/frame.png`
 - `s3_source` (optional dropdown): which key set to upload with (default: the first one)
 
 Output:
-- No outputs (`OUTPUT_NODE = True`)
+- No outputs (`OUTPUT_NODE = True`), so it can be the last node of a workflow
 
 Behavior:
-- Converts tensor to PNG and uploads to S3
+- Converts each image to PNG and uploads it to S3
+- 1 image: uploaded to `s3_key` as-is
+- A batch of N images: a number is added before the extension, e.g. `results/run1/frame_00001.png`, `frame_00002.png`, ...
+- Shows the images in the node using ComfyUI's own Preview Image (temp files, same as the Preview Image node). If the preview fails, the upload still succeeds.
 - Prints upload completion log with duration
 
 ### Save Video To S3
