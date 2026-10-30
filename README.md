@@ -131,11 +131,13 @@ Input (connect exactly one of `video`, `filenames`, `video_path`):
 - `filenames` (VHS_FILENAMES, optional): the `Filenames` output of VideoHelperSuite's Video Combine. The final video file (the one with audio, if any) is uploaded.
 - `video_path` (STRING, optional, force input): Absolute local path, e.g. `/root/autodl-tmp/ComfyUI/output/clip.mp4`
 - `s3_source` (optional dropdown): which key set to upload with (default: the first one)
+- `faststart` (BOOLEAN, optional, default on): for `.mp4 / .mov / .m4v`, move the moov atom to the front before uploading
 
 Output:
 - No outputs (`OUTPUT_NODE = True`), so it can be the last node of a workflow
 
 Behavior:
+- With `faststart` on, remuxes mp4/mov with `ffmpeg -c copy -movflags +faststart` into a temp file and uploads that: no re-encode, metadata kept, takes well under a second for a few MB. Video Combine (VHS) has no faststart option, so its mp4s otherwise keep the moov at the end and browsers must fetch the tail before playing. Uses `ffmpeg` from `PATH`, else `imageio-ffmpeg`'s; if neither is found or the remux fails, it logs a warning and uploads the original. The preview shows the original file.
 - For `filenames` / `video_path`: validates absolute path, file existence and extension (`.mp4 .mov .webm .mkv .avi .gif .webp`)
 - Uploads the file to S3 and prints upload duration
 - Sets the object's Content-Type from the `s3_key` extension (e.g. `video/mp4`); an unknown extension leaves it to the storage default

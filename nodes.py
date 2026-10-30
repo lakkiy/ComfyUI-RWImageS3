@@ -220,6 +220,80 @@ ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif", ".w
 # Optional: used by ReadImageFromS3 when the file is actually a video
 FFMPEG_PATH = shutil.which("ffmpeg")
 
+# SaveVideoToS3 moves the moov atom to the front of these containers
+FASTSTART_EXTENSIONS = (".mp4", ".mov", ".m4v")
+
+
+def _faststart_ffmpeg():
+    """ffmpeg for SaveVideoToS3: the one in PATH, else imageio-ffmpeg's (VHS may use it)."""
+    if FFMPEG_PATH:
+        return FFMPEG_PATH
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _faststart_copy(local_video_path: str):
+    """
+    Remux an mp4/mov into a temp file with the moov atom at the front, so
+    browsers can start playing before the whole file is downloaded and
+    readers can get the size from the file head. Streams are copied, not
+    re-encoded; metadata (VHS's embedded workflow) is kept.
+
+    Returns the temp file path, or None when the file is not mp4/mov, ffmpeg
+    is missing or the remux fails; the caller then uploads the original.
+    """
+    extension = os.path.splitext(local_video_path)[1].lower()
+    if extension not in FASTSTART_EXTENSIONS:
+        return None
+    ffmpeg = _faststart_ffmpeg()
+    if not ffmpeg:
+        print("SaveVideoToS3: ffmpeg not found, uploading without faststart")
+        return None
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=extension)
+    output_path = temp_file.name
+    temp_file.close()
+    start_time = time.time()
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                local_video_path,
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-map_metadata",
+                "0",
+                "-movflags",
+                "+faststart+use_metadata_tags",
+                output_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except Exception as error:
+        result = None
+        ffmpeg_error = str(error)
+    else:
+        ffmpeg_error = (result.stderr or "").strip() or "unknown ffmpeg error"
+
+    if result is None or result.returncode != 0 or os.path.getsize(output_path) == 0:
+        print(f"SaveVideoToS3: faststart failed, uploading the original: {ffmpeg_error}")
+        os.remove(output_path)
+        return None
+    print(f"SaveVideoToS3: faststart done, duration={time.time() - start_time:.3f}s")
+    return output_path
+
 
 class ReadImageFromS3:
     """
@@ -663,6 +737,13 @@ class SaveVideoToS3:
                     {"forceInput": True, "tooltip": "Absolute local path of a video file."},
                 ),
                 "s3_source": _write_source_input(),
+                "faststart": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "For mp4/mov, move the moov atom to the front before uploading (stream copy, no re-encode), so browsers can start playing right away.",
+                    },
+                ),
             },
         }
 
@@ -747,6 +828,7 @@ class SaveVideoToS3:
         filenames=None,
         video_path: str = None,
         s3_source: str = "",
+        faststart: bool = True,
     ):
         source = _resolve_write_source(s3_source, "SaveVideoToS3")
 
@@ -780,19 +862,24 @@ class SaveVideoToS3:
         else:
             local_video_path = self._check_local_file(video_path)
 
+        # The preview keeps showing the original; only the upload uses the remux
+        faststart_path = _faststart_copy(local_video_path) if faststart else None
+        upload_path = faststart_path or local_video_path
         try:
             start_time = time.time()
             source["client"].upload_file(
-                local_video_path, source["bucket"], s3_key, ExtraArgs=_upload_args(s3_key)
+                upload_path, source["bucket"], s3_key, ExtraArgs=_upload_args(s3_key)
             )
             print(
                 f"S3 upload completed (video, {source['name']}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
         except Exception as error:
             raise RuntimeError(
-                f"SaveVideoToS3: Failed to upload '{local_video_path}' to '{s3_key}': {error}"
+                f"SaveVideoToS3: Failed to upload '{upload_path}' to '{s3_key}': {error}"
             )
         finally:
+            if faststart_path and os.path.exists(faststart_path):
+                os.remove(faststart_path)
             if delete_after and os.path.exists(local_video_path):
                 os.remove(local_video_path)
 
