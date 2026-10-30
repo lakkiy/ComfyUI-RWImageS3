@@ -8,7 +8,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 - Support HEIC/HEIF uploads when `pillow-heif` is installed, even if the S3 key is mislabeled as `.png/.jpg`
 - Automatically fall back to the first frame when the downloaded object is actually a video/live photo
 - Save an IMAGE batch to S3 using an explicit `s3_key`, with a native ComfyUI preview in the node
-- Save a local video file to S3 using an explicit `video_path` and `s3_key`
+- Save a video to S3 from a native ComfyUI `VIDEO`, VideoHelperSuite's Video Combine, or a local file path, with a video preview in the node
 - Multiple named S3 key sets: pick one per node in ComfyUI, or let reads try them all in order
 - Optional custom S3 endpoint support (R2, MinIO, etc.)
 - Upload/download timing logs in ComfyUI console
@@ -124,18 +124,20 @@ Behavior:
 
 Category: `image`
 
-Input:
-- `video_path` (STRING, force input): Absolute local path, e.g. `/root/autodl-tmp/ComfyUI/output/clip.mp4`
+Input (connect exactly one of `video`, `filenames`, `video_path`):
 - `s3_key` (STRING): Full target object key, e.g. `results/run1/clip.mp4`
+- `video` (VIDEO, optional): native ComfyUI video, e.g. from Create Video or Load Video. Written as mp4, mkv or webm based on the `s3_key` extension (anything else is written as mp4).
+- `filenames` (VHS_FILENAMES, optional): the `Filenames` output of VideoHelperSuite's Video Combine. The final video file (the one with audio, if any) is uploaded.
+- `video_path` (STRING, optional, force input): Absolute local path, e.g. `/root/autodl-tmp/ComfyUI/output/clip.mp4`
 - `s3_source` (optional dropdown): which key set to upload with (default: the first one)
 
 Output:
-- No outputs (`OUTPUT_NODE = True`)
+- No outputs (`OUTPUT_NODE = True`), so it can be the last node of a workflow
 
 Behavior:
-- Validates absolute path and file existence
-- Validates extension: `.mp4 .mov .webm .mkv .avi .gif`
-- Uploads file to S3 and prints upload duration
+- For `filenames` / `video_path`: validates absolute path, file existence and extension (`.mp4 .mov .webm .mkv .avi .gif .webp`)
+- Uploads the file to S3 and prints upload duration
+- Shows the video in the node, in the same format as ComfyUI's Save Video node. If the preview fails, the upload still succeeds.
 
 ### Is Mask Empty
 

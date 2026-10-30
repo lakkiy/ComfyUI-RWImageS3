@@ -6,7 +6,8 @@ Highlights:
 - If the downloaded file is actually a video / Apple Live Photo video, it uses
   ffmpeg and returns the first frame as a ComfyUI IMAGE
 - SaveImageToS3 uploads an IMAGE tensor as PNG
-- SaveVideoToS3 uploads a local video file
+- SaveVideoToS3 uploads a native VIDEO, a VideoHelperSuite Video Combine
+  output, or a local video file
 
 Version: 3.2.0
 """
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from typing import Any, Dict, Tuple, Union
 
 import boto3
@@ -212,7 +214,7 @@ def _resolve_write_source(s3_source: str, node_name: str) -> Dict[str, Any]:
 
 
 # SaveVideoToS3 only accepts these local video extensions
-ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
+ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif", ".webp")
 
 # Optional: used by ReadImageFromS3 when the file is actually a video
 FFMPEG_PATH = shutil.which("ffmpeg")
@@ -551,25 +553,102 @@ class SaveImageToS3:
         return {"ui": ui} if ui else ()
 
 
+def _comfy_folder_paths():
+    """ComfyUI's folder_paths module, or None when running outside ComfyUI."""
+    try:
+        import folder_paths
+
+        return folder_paths
+    except ImportError:
+        return None
+
+
+# Native ComfyUI VIDEO inputs can be written as these containers;
+# anything else is written as mp4
+NATIVE_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm")
+
+
+def _video_preview(file_path: str):
+    """
+    Build the same UI preview ComfyUI's Save Video node returns:
+    {"images": [{filename, subfolder, type}], "animated": (True,)}
+
+    Files already under ComfyUI's output/temp/input folders are shown in
+    place; other files are copied into the temp folder first. Returns None
+    outside ComfyUI or if anything fails; the S3 upload is not affected.
+    """
+    folder_paths = _comfy_folder_paths()
+    if folder_paths is None:
+        return None
+
+    try:
+        path = os.path.abspath(file_path)
+        extension = os.path.splitext(path)[1].lower()
+        result = None
+
+        for folder_type, base in (
+            ("output", folder_paths.get_output_directory()),
+            ("temp", folder_paths.get_temp_directory()),
+            ("input", folder_paths.get_input_directory()),
+        ):
+            base = os.path.abspath(base)
+            try:
+                inside = os.path.commonpath([path, base]) == base
+            except ValueError:
+                # Different drives on Windows
+                inside = False
+            if inside:
+                subfolder, filename = os.path.split(os.path.relpath(path, base))
+                result = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+                break
+
+        if result is None:
+            temp_dir = folder_paths.get_temp_directory()
+            os.makedirs(temp_dir, exist_ok=True)
+            filename = f"s3_video_preview_{uuid.uuid4().hex[:12]}{extension}"
+            shutil.copy2(path, os.path.join(temp_dir, filename))
+            result = {"filename": filename, "subfolder": "", "type": "temp"}
+
+        # The frontend plays "animated" results as <video>, which cannot play
+        # a gif; a gif shown as a plain image still animates
+        return {"images": [result], "animated": (extension != ".gif",)}
+    except Exception as error:
+        print(f"SaveVideoToS3: Preview failed, skipping preview: {error}")
+        return None
+
+
 class SaveVideoToS3:
-    """Upload one local video file to S3."""
+    """
+    Upload one video to S3 and show it in the node.
+
+    Connect exactly one of:
+    - video:      native ComfyUI VIDEO (Load Video, Create Video, ...)
+    - filenames:  VHS_FILENAMES from VideoHelperSuite's Video Combine
+    - video_path: absolute local file path (STRING)
+    """
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "video_path": (
-                    "STRING",
-                    {
-                        "forceInput": True,
-                    },
-                ),
                 "s3_key": (
                     "STRING",
                     {"default": "videos/result.mp4", "multiline": False},
                 ),
             },
             "optional": {
+                "video": (
+                    "VIDEO",
+                    {"tooltip": "Native ComfyUI video (e.g. from Create Video). Saved as mp4/mkv/webm based on the s3_key extension."},
+                ),
+                "filenames": (
+                    "VHS_FILENAMES",
+                    {"tooltip": "Filenames output of VideoHelperSuite's Video Combine. The final video file is uploaded."},
+                ),
+                "video_path": (
+                    "STRING",
+                    {"forceInput": True, "tooltip": "Absolute local path of a video file."},
+                ),
                 "s3_source": _write_source_input(),
             },
         }
@@ -580,14 +659,8 @@ class SaveVideoToS3:
     FUNCTION = "save_video_to_s3"
     OUTPUT_NODE = True
 
-    def save_video_to_s3(self, video_path: str, s3_key: str, s3_source: str = ""):
-        source = _resolve_write_source(s3_source, "SaveVideoToS3")
-
-        local_video_path = os.path.expanduser(str(video_path).strip().strip("\"'"))
-        s3_key = (s3_key or "").strip().lstrip("/")
-
-        if not s3_key:
-            raise RuntimeError("SaveVideoToS3: s3_key cannot be empty.")
+    def _check_local_file(self, local_video_path: str) -> str:
+        local_video_path = os.path.expanduser(str(local_video_path).strip().strip("\"'"))
 
         if not os.path.isabs(local_video_path):
             raise RuntimeError(
@@ -606,6 +679,93 @@ class SaveVideoToS3:
                 f"SaveVideoToS3: Unsupported video extension '{extension}'. "
                 f"Allowed: {ALLOWED_VIDEO_EXTENSIONS}"
             )
+        return local_video_path
+
+    def _vhs_final_file(self, filenames) -> str:
+        # VHS_FILENAMES is (save_output, [files...]); the last file is the
+        # final video (the one with audio, if audio was added)
+        if not (
+            isinstance(filenames, (tuple, list))
+            and len(filenames) == 2
+            and isinstance(filenames[1], (tuple, list))
+        ):
+            raise RuntimeError(
+                "SaveVideoToS3: 'filenames' is not a VHS_FILENAMES value from Video Combine."
+            )
+        files = list(filenames[1])
+        if not files:
+            raise RuntimeError("SaveVideoToS3: Video Combine returned no files.")
+        return files[-1]
+
+    def _write_native_video(self, video, s3_key: str) -> Tuple[str, bool]:
+        """
+        Write a native VIDEO to a local file. Returns (path, keep): keep is
+        True when the file lives in ComfyUI's temp folder for the preview.
+        """
+        extension = os.path.splitext(s3_key)[1].lower()
+        if extension not in NATIVE_VIDEO_EXTENSIONS:
+            extension = ".mp4"
+
+        folder_paths = _comfy_folder_paths()
+        if folder_paths is not None:
+            temp_dir = folder_paths.get_temp_directory()
+            os.makedirs(temp_dir, exist_ok=True)
+            path = os.path.join(temp_dir, f"s3_video_{uuid.uuid4().hex[:12]}{extension}")
+            keep = True
+        else:
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=extension)
+            path = temp_file.name
+            temp_file.close()
+            keep = False
+
+        try:
+            # The container (mp4/mkv/webm) follows the file extension
+            video.save_to(path)
+        except Exception as error:
+            if os.path.exists(path):
+                os.remove(path)
+            raise RuntimeError(f"SaveVideoToS3: Failed to write the video: {error}")
+        return path, keep
+
+    def save_video_to_s3(
+        self,
+        s3_key: str,
+        video=None,
+        filenames=None,
+        video_path: str = None,
+        s3_source: str = "",
+    ):
+        source = _resolve_write_source(s3_source, "SaveVideoToS3")
+
+        s3_key = (s3_key or "").strip().lstrip("/")
+        if not s3_key:
+            raise RuntimeError("SaveVideoToS3: s3_key cannot be empty.")
+
+        has_path = video_path is not None and str(video_path).strip() != ""
+        connected = [
+            name
+            for name, present in (
+                ("video", video is not None),
+                ("filenames", filenames is not None),
+                ("video_path", has_path),
+            )
+            if present
+        ]
+        if len(connected) != 1:
+            raise RuntimeError(
+                "SaveVideoToS3: Connect exactly one of 'video', 'filenames' or 'video_path'"
+                + (f" (got: {', '.join(connected)})." if connected else ".")
+            )
+
+        local_video_path = None
+        delete_after = False
+        if video is not None:
+            local_video_path, keep = self._write_native_video(video, s3_key)
+            delete_after = not keep
+        elif filenames is not None:
+            local_video_path = self._check_local_file(self._vhs_final_file(filenames))
+        else:
+            local_video_path = self._check_local_file(video_path)
 
         try:
             start_time = time.time()
@@ -617,8 +777,12 @@ class SaveVideoToS3:
             raise RuntimeError(
                 f"SaveVideoToS3: Failed to upload '{local_video_path}' to '{s3_key}': {error}"
             )
+        finally:
+            if delete_after and os.path.exists(local_video_path):
+                os.remove(local_video_path)
 
-        return ()
+        ui = None if delete_after else _video_preview(local_video_path)
+        return {"ui": ui} if ui else ()
 
 
 class IsMaskEmptyNode:
