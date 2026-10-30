@@ -115,6 +115,7 @@ Output:
 
 Behavior:
 - Converts each image to PNG and uploads it to S3
+- Sets the object's Content-Type from the `s3_key` extension (e.g. `image/png`), so a bucket served straight to browsers shows it
 - 1 image: uploaded to `s3_key` as-is
 - A batch of N images: a number is added before the extension, e.g. `results/run1/frame_00001.png`, `frame_00002.png`, ...
 - Shows the images in the node using ComfyUI's own Preview Image (temp files, same as the Preview Image node). If the preview fails, the upload still succeeds.
@@ -137,6 +138,7 @@ Output:
 Behavior:
 - For `filenames` / `video_path`: validates absolute path, file existence and extension (`.mp4 .mov .webm .mkv .avi .gif .webp`)
 - Uploads the file to S3 and prints upload duration
+- Sets the object's Content-Type from the `s3_key` extension (e.g. `video/mp4`); an unknown extension leaves it to the storage default
 - Shows the video in the node, in the same format as ComfyUI's Save Video node. If the preview fails, the upload still succeeds.
 
 ### Is Mask Empty

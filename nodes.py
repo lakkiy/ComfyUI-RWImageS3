@@ -12,6 +12,7 @@ Highlights:
 Version: 3.2.0
 """
 
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -424,6 +425,16 @@ class ReadImageFromS3:
         return True
 
 
+def _upload_args(s3_key: str) -> Dict[str, Any]:
+    """
+    ExtraArgs for upload_file: the Content-Type guessed from the key's
+    extension. Without it the object is stored as application/octet-stream,
+    which browsers may refuse to show when the bucket is served directly.
+    """
+    content_type, _ = mimetypes.guess_type(s3_key)
+    return {"ContentType": content_type} if content_type else {}
+
+
 def _batch_s3_key(s3_key: str, index: int, total: int) -> str:
     """
     Key for image `index` (0-based) of a batch.
@@ -509,7 +520,9 @@ class SaveImageToS3:
                 temp_file_path = temp_file.name
 
             start_time = time.time()
-            source["client"].upload_file(temp_file_path, source["bucket"], s3_key)
+            source["client"].upload_file(
+                temp_file_path, source["bucket"], s3_key, ExtraArgs=_upload_args(s3_key)
+            )
             print(
                 f"S3 upload completed (image, {source['name']}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
@@ -769,7 +782,9 @@ class SaveVideoToS3:
 
         try:
             start_time = time.time()
-            source["client"].upload_file(local_video_path, source["bucket"], s3_key)
+            source["client"].upload_file(
+                local_video_path, source["bucket"], s3_key, ExtraArgs=_upload_args(s3_key)
+            )
             print(
                 f"S3 upload completed (video, {source['name']}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
             )
