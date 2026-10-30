@@ -8,8 +8,9 @@ Highlights:
 - SaveImageToS3 uploads an IMAGE tensor as PNG
 - SaveVideoToS3 uploads a native VIDEO, a VideoHelperSuite Video Combine
   output, or a local video file
+- ReadVideoFromS3 downloads a video and returns its local path and a native VIDEO
 
-Version: 3.2.0
+Version: 3.3.0
 """
 
 import mimetypes
@@ -295,6 +296,44 @@ def _faststart_copy(local_video_path: str):
     return output_path
 
 
+def _read_sources(s3_source: str, node_name: str) -> list:
+    """Key sets a read should try: all of them for auto, else the named one."""
+    if not S3_SOURCES:
+        raise RuntimeError(
+            f"{node_name}: No S3 storage is configured. Please set S3_BUCKET_NAME in your .env file."
+        )
+    if not s3_source or s3_source == AUTO_SOURCE:
+        return S3_SOURCES
+    return [_get_source(s3_source, node_name)]
+
+
+def _download_from_sources(sources: list, s3_key: str, dest_path: str, node_name: str):
+    """
+    Download s3_key to dest_path from the first key set that has it.
+    Removes dest_path and raises if every key set fails.
+    """
+    errors = []
+    for source in sources:
+        label = source["name"]
+        try:
+            start_time = time.time()
+            source["client"].download_file(source["bucket"], s3_key, dest_path)
+            print(
+                f"S3 download completed ({label}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
+            )
+            return
+        except Exception as error:
+            print(f"S3 download failed ({label}) for '{s3_key}': {error}")
+            errors.append(f"{label}: {error}")
+
+    if os.path.exists(dest_path):
+        os.remove(dest_path)
+    raise RuntimeError(
+        f"{node_name}: Failed to download '{s3_key}' from all configured storage. "
+        + " | ".join(errors)
+    )
+
+
 class ReadImageFromS3:
     """
     Read one file from S3 and return it as a ComfyUI IMAGE.
@@ -394,16 +433,7 @@ class ReadImageFromS3:
                 os.remove(frame_path)
 
     def _download_to_temp_file(self, s3_key: str, s3_source: str) -> str:
-        if not S3_SOURCES:
-            raise RuntimeError(
-                "ReadImageFromS3: No S3 storage is configured. Please set S3_BUCKET_NAME in your .env file."
-            )
-
-        if not s3_source or s3_source == AUTO_SOURCE:
-            sources = S3_SOURCES
-        else:
-            sources = [_get_source(s3_source, "ReadImageFromS3")]
-
+        sources = _read_sources(s3_source, "ReadImageFromS3")
         temp_file = tempfile.NamedTemporaryFile(
             delete=False,
             suffix=os.path.splitext(s3_key)[1] or ".bin",
@@ -411,26 +441,8 @@ class ReadImageFromS3:
         temp_path = temp_file.name
         temp_file.close()
 
-        errors = []
-        for source in sources:
-            label = source["name"]
-            try:
-                start_time = time.time()
-                source["client"].download_file(source["bucket"], s3_key, temp_path)
-                print(
-                    f"S3 download completed ({label}): s3_key='{s3_key}', duration={time.time() - start_time:.3f}s"
-                )
-                return temp_path
-            except Exception as error:
-                print(f"S3 download failed ({label}) for '{s3_key}': {error}")
-                errors.append(f"{label}: {error}")
-
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise RuntimeError(
-            f"ReadImageFromS3: Failed to download '{s3_key}' from all configured storage. "
-            + " | ".join(errors)
-        )
+        _download_from_sources(sources, s3_key, temp_path, "ReadImageFromS3")
+        return temp_path
 
     def load_image(
         self, s3_key: str, s3_source: str = AUTO_SOURCE
@@ -887,6 +899,91 @@ class SaveVideoToS3:
         return {"ui": ui} if ui else ()
 
 
+def _video_from_file(path: str):
+    """A native ComfyUI VIDEO for a local file, or None outside ComfyUI."""
+    try:
+        from comfy_api.latest import InputImpl
+
+        return InputImpl.VideoFromFile(path)
+    except ImportError:
+        pass
+    try:
+        from comfy_api.input_impl import VideoFromFile
+
+        return VideoFromFile(path)
+    except ImportError:
+        return None
+
+
+class ReadVideoFromS3:
+    """
+    Download one video from S3 and return it two ways:
+    - video_path: local file path (STRING), e.g. for VideoHelperSuite's
+      Load Video (Path), which also gives frames, frame count, audio and info
+    - video:      native ComfyUI VIDEO, e.g. for Concatenate Video or Save Video
+
+    The file goes to ComfyUI's temp folder and is kept: both outputs read it
+    after this node returns. ComfyUI empties the temp folder on startup.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "s3_key": (
+                    "STRING",
+                    {"default": "videos/example.mp4", "multiline": False},
+                ),
+            },
+            "optional": {
+                "s3_source": (
+                    [AUTO_SOURCE] + S3_SOURCE_NAMES,
+                    {
+                        "default": AUTO_SOURCE,
+                        "tooltip": "Which S3 key set to read from. 'auto' tries each configured one in order.",
+                    },
+                ),
+            },
+        }
+
+    CATEGORY = "image"
+    RETURN_TYPES = ("STRING", "VIDEO")
+    RETURN_NAMES = ("video_path", "video")
+    FUNCTION = "load_video"
+
+    def load_video(self, s3_key: str, s3_source: str = AUTO_SOURCE):
+        s3_key = (s3_key or "").strip().lstrip("/")
+        sources = _read_sources(s3_source, "ReadVideoFromS3")
+
+        extension = os.path.splitext(s3_key)[1].lower()
+        if extension not in ALLOWED_VIDEO_EXTENSIONS:
+            extension = ".mp4"
+        folder_paths = _comfy_folder_paths()
+        if folder_paths is not None:
+            temp_dir = folder_paths.get_temp_directory()
+        else:
+            temp_dir = tempfile.gettempdir()
+        os.makedirs(temp_dir, exist_ok=True)
+        path = os.path.join(temp_dir, f"s3_read_video_{uuid.uuid4().hex[:12]}{extension}")
+
+        _download_from_sources(sources, s3_key, path, "ReadVideoFromS3")
+        return (path, _video_from_file(path))
+
+    @classmethod
+    def IS_CHANGED(cls, s3_key: str, s3_source: str = AUTO_SOURCE) -> str:
+        return f"{s3_source}|{s3_key}"
+
+    @classmethod
+    def VALIDATE_INPUTS(
+        cls, s3_key: str, s3_source: str = AUTO_SOURCE
+    ) -> Union[bool, str]:
+        if not s3_key or not s3_key.strip():
+            return "S3 key cannot be empty."
+        if s3_source and s3_source != AUTO_SOURCE and s3_source not in S3_SOURCE_NAMES:
+            return f"S3 source '{s3_source}' is not configured. Available: {S3_SOURCE_NAMES}"
+        return True
+
+
 class IsMaskEmptyNode:
     """Return True if every value in the mask is 0."""
 
@@ -911,5 +1008,6 @@ NODE_CLASS_MAPPINGS = {
     "Read Image From S3": ReadImageFromS3,
     "Save Image To S3": SaveImageToS3,
     "Save Video To S3": SaveVideoToS3,
+    "Read Video From S3": ReadVideoFromS3,
     "Is Mask Empty": IsMaskEmptyNode,
 }

@@ -9,6 +9,7 @@ ComfyUI custom nodes for reading images from S3 and saving images/videos to S3.
 - Automatically fall back to the first frame when the downloaded object is actually a video/live photo
 - Save an IMAGE batch to S3 using an explicit `s3_key`, with a native ComfyUI preview in the node
 - Save a video to S3 from a native ComfyUI `VIDEO`, VideoHelperSuite's Video Combine, or a local file path, with a video preview in the node
+- Read a video from S3 as a local file path (for VideoHelperSuite's Load Video (Path)) and a native ComfyUI `VIDEO`
 - Multiple named S3 key sets: pick one per node in ComfyUI, or let reads try them all in order
 - Optional custom S3 endpoint support (R2, MinIO, etc.)
 - Upload/download timing logs in ComfyUI console
@@ -142,6 +143,24 @@ Behavior:
 - Uploads the file to S3 and prints upload duration
 - Sets the object's Content-Type from the `s3_key` extension (e.g. `video/mp4`); an unknown extension leaves it to the storage default
 - Shows the video in the node, in the same format as ComfyUI's Save Video node. If the preview fails, the upload still succeeds.
+
+### Read Video From S3
+
+Category: `image`
+
+Input:
+- `s3_key` (STRING): Full object key in bucket, e.g. `videos/clip.mp4`
+- `s3_source` (optional dropdown): `auto (try in order)` (default) or one key set name
+
+Output:
+- `video_path` (STRING): local path of the downloaded file, e.g. for VideoHelperSuite's Load Video (Path), which gives frames, frame count, audio and video info
+- `video` (VIDEO): native ComfyUI video, e.g. for Concatenate Video or Save Video To S3
+
+Behavior:
+- `auto` / named key set: same as Read Image From S3
+- Downloads into ComfyUI's temp folder under a new random name and keeps the file, because both outputs read it after the node returns. ComfyUI empties the temp folder on startup.
+- The file is not decoded here; a key without a video extension is saved as `.mp4`
+- Re-runs only when `s3_key` or `s3_source` changes (same caching as Read Image From S3)
 
 ### Is Mask Empty
 
